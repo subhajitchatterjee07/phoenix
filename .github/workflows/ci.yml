@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  size:
+    name: PR size (max 100 lines)
+    # Release PRs (dev -> main) are exempt, see CONTRIBUTING.md.
+    if: github.base_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Count changed lines
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LIMIT: 100
+        run: |
+          # Binary files show "-" in numstat; count them as 0.
+          lines=$(git diff --numstat "$BASE...$HEAD" -- . \
+                    ':(exclude)package-lock.json' ':(exclude)docs/*.md' \
+                  | awk '{ a = ($1 == "-") ? 0 : $1; d = ($2 == "-") ? 0 : $2; s += a + d } END { print s + 0 }')
+          echo "Changed lines (excluding lockfile and docs/*.md): $lines / $LIMIT"
+          if [ "$lines" -gt "$LIMIT" ]; then
+            echo "::error::This PR changes $lines lines; the limit is $LIMIT. Split the ticket."
+            exit 1
+          fi
