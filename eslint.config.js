@@ -10,6 +10,6 @@ export default tseslint.config(
       // A promise you forget to await is a step that runs out of order (LLD 4.5).
       "@typescript-eslint/no-floating-promises": "error",
     },
-    languageOptions: { parserOptions: { projectService: { allowDefaultProject: ["eslint.config.js"] } } },
+    languageOptions: { parserOptions: { projectService: { allowDefaultProject: ["eslint.config.js", "vitest.config.ts"] } } },
   },
 );
