@@ -14,7 +14,7 @@ outbox transaction, the dispatcher loop) are meant to be written by hand.
 | Postgres client | `pg` (Pool, explicit transactions) |
 | API | Fastify |
 | Validation (plans, registry args, API bodies) | zod |
-| LLM | OpenAI-compatible client pointed at OpenRouter (configurable) |
+| LLM | official `openai` npm client pointed at OpenRouter (base URL, key, model configurable) |
 | MCP client (in worker) | `@modelcontextprotocol/sdk` |
 | Tools server | **Python** MCP server (`phoenix-tools`), Streamable HTTP transport: calculations, analytics |
 | Tests | vitest |
@@ -471,7 +471,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 
 | Tool | Purpose |
 |---|---|
-| `fake-llm` | Configurable 429 rate, latency, timeouts, `Retry-After`; counts calls per (task, step) |
+| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-8090}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
 | `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |

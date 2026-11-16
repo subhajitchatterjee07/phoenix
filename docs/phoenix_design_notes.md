@@ -93,3 +93,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   validated with zod at boot; any bad value stops the process with every problem listed.
   Added to §9: `DATABASE_URL` (required) and the name `POLL_JITTER_MS` (§9 had only the value).
   LLM settings (base URL, key, model) are deferred to PHX-011.
+- LLM client and fake (PHX-009, 16 Nov 2026): the official `openai` npm client talks to
+  OpenRouter; the fake LLM speaks the same API, so switching between the fake and a real
+  model (e.g. `deepseek/deepseek-chat`) is only a base URL + key + model change.
+  Every LLM call sends `X-Phoenix-Task` and `X-Phoenix-Step` headers (OpenRouter ignores
+  them) so the fake can count calls per (task, step); the chaos assertion "LLM calls per
+  saved step = 1" reads `GET /stats`. Rejected: counting by a hash of the prompt (two
+  steps with the same prompt would merge).
