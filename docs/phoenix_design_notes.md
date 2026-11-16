@@ -105,3 +105,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   `node dist/src/<box>.js`; `migrations/` is copied to `dist/migrations`. Inside compose,
   `DATABASE_URL` uses host `postgres`. Fake LLM listens on 9001 (HLD §8; PHX-009 had 8090
   by mistake).
+- LLM client settings (PHX-011, 16 Nov 2026): `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
+  default to the fake, so a paid model is only used when all three are set on purpose.
+  The `openai` client runs with `maxRetries: 0`: its default would silently retry 429/5xx
+  twice under our own step() retries (LLD §4.3), multiplying calls and hiding them from
+  `events.attempts`. One retry layer, and it is ours.
