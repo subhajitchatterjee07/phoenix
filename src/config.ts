@@ -28,6 +28,10 @@ const ConfigSchema = z.object({
   DEFAULT_MAX_STEPS: positiveInt().default(200),
   INLINE_RESULT_MAX_BYTES: positiveInt().default(65_536),
   LLM_TIMEOUT_MS: positiveInt().default(60_000),
+  // Defaults point at the fake LLM: a real, paid model needs all three set explicitly.
+  LLM_BASE_URL: z.url().default("http://localhost:9001/v1"),
+  LLM_API_KEY: z.string().min(1).default("fake"),
+  LLM_MODEL: z.string().min(1).default("fake"),
   MCP_TOOLS_URL: z.url().default("http://phoenix-tools:8100/mcp"),
   MCP_ALLOWLIST: allowlist.default({
     "phoenix-tools": ["calculate", "analyze_table", "describe_stats", "query_analytics"],

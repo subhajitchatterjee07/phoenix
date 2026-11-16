@@ -8,6 +8,10 @@ x-app: &app
   environment:
     # Inside the compose network Postgres is reachable as "postgres", not localhost.
     DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    # The fake LLM unless .env says otherwise (e.g. https://openrouter.ai/api/v1).
+    LLM_BASE_URL: ${LLM_BASE_URL:-http://fake-llm:9001/v1}
+    LLM_API_KEY: ${LLM_API_KEY:-fake}
+    LLM_MODEL: ${LLM_MODEL:-fake}
 
 services:
   postgres:
