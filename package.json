@@ -20,7 +20,8 @@
     "db:psql": "docker compose exec postgres sh -c \"psql -U $POSTGRES_USER -d $POSTGRES_DB\"",
     "db:migrate": "tsx --env-file=.env src/migrate.ts",
     "fake-llm": "tsx testing/fake-llm.ts",
-    "chaos:p0": "bash testing/chaos/p0-smoke.sh"
+    "chaos:p0": "bash testing/chaos/p0-smoke.sh",
+    "seed": "tsx --env-file=.env testing/seed.ts"
   },
   "repository": {
     "type": "git",
