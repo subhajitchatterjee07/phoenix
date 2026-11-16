@@ -1,0 +1,23 @@
+name: phoenix
+
+services:
+  postgres:
+    image: postgres:16.16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set it in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set it in .env}
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      # Tasks must survive container restarts and `down`; only db:reset wipes this.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # "Container started" is not "accepting connections".
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:
