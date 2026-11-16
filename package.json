@@ -21,7 +21,8 @@
     "db:migrate": "tsx --env-file=.env src/migrate.ts",
     "fake-llm": "tsx testing/fake-llm.ts",
     "chaos:p0": "bash testing/chaos/p0-smoke.sh",
-    "seed": "tsx --env-file=.env testing/seed.ts"
+    "seed": "tsx --env-file=.env testing/seed.ts",
+    "chaos:p1": "bash testing/chaos/p1-baseline.sh"
   },
   "repository": {
     "type": "git",
