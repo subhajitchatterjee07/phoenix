@@ -4,6 +4,7 @@ name: phoenix
 x-app: &app
   build: .
   image: phoenix-app:dev
+  init: true # forwards SIGTERM to node, so `docker compose stop` is instant
   environment:
     # Inside the compose network Postgres is reachable as "postgres", not localhost.
     DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -33,6 +34,24 @@ services:
     command: ["node", "dist/src/migrate.js"]
     depends_on:
       postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    command: ["node", "dist/src/api.js"]
+    ports: ["8000:8000"]
+    depends_on: &after-migrate
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app
+    command: ["node", "dist/src/worker.js"]
+    deploy: { replicas: 3 }
+    depends_on: *after-migrate
+
+  dispatcher:
+    <<: *app
+    command: ["node", "dist/src/dispatcher.js"]
+    depends_on: *after-migrate
 
   fake-llm:
     <<: *app
