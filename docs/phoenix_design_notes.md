@@ -77,3 +77,15 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   Then: keep the outbox and add a relay that publishes outbox rows to the broker.
 - One codebase, three entry points (api, worker, dispatcher), one Docker image.
   A modular monolith, not microservices: all three share one Postgres on purpose.
+- Schema changes go through numbered migrations (PHX-006, 16 Nov 2026).
+  `migrations/NNN_name.sql` files are applied in name order by `src/migrate.ts`
+  (`npm run db:migrate`), and a `schema_migrations` table records which have run.
+  Each file runs in ONE transaction with its `schema_migrations` row (a crash leaves
+  all of it or none). A session advisory lock serialises migrators, so 3 workers
+  booting together apply each file exactly once.
+  Rejected: Postgres `docker-entrypoint-initdb.d` (runs only on an empty volume, so
+  L5's `workflow_version` column could never reach an existing database);
+  `CREATE TABLE IF NOT EXISTS` in one file (can't express ALTERs).
+  Ordering at boot (PHX-010): a one-shot `migrate` compose service; api, worker and
+  dispatcher wait for it with `condition: service_completed_successfully`, because
+  `pg_isready` only means "accepting connections", not "schema ready".
