@@ -110,3 +110,6 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   The `openai` client runs with `maxRetries: 0`: its default would silently retry 429/5xx
   twice under our own step() retries (LLD §4.3), multiplying calls and hiding them from
   `events.attempts`. One retry layer, and it is ours.
+- Seed script (PHX-012, 16 Nov 2026): `testing/seed.ts` (`npm run seed -- "<goal>"`)
+  inserts a PENDING task straight into Postgres. DEV/TEST ONLY: it bypasses the API, which
+  stays the product's only task writer (HLD §4). Needed until `POST /tasks` (PHX-043).
