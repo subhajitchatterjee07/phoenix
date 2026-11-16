@@ -89,3 +89,7 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   Ordering at boot (PHX-010): a one-shot `migrate` compose service; api, worker and
   dispatcher wait for it with `condition: service_completed_successfully`, because
   `pg_isready` only means "accepting connections", not "schema ready".
+- Configuration (PHX-007, 16 Nov 2026): LLD §9 values are env vars of the same name,
+  validated with zod at boot; any bad value stops the process with every problem listed.
+  Added to §9: `DATABASE_URL` (required) and the name `POLL_JITTER_MS` (§9 had only the value).
+  LLM settings (base URL, key, model) are deferred to PHX-011.
