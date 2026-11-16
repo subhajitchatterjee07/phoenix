@@ -12,7 +12,7 @@ emails, no re-paid LLM work for finished steps, and the same result.
 - `docs/LLD.md`: schema, state machines, @step contract, every query, dispatcher, API (build from this)
 - `docs/PLAN_FORMAT.md`: how plans use loops and references (no hardcoded values)
 - `docs/phoenix_design_notes.md`: the running decision log
-- `docs/phoenix_schema.sql`: DDL, generated from LLD section 2
+- `migrations/001_init.sql`: DDL, generated from LLD section 2 (applied by `npm run db:migrate`)
 - `docs/Phoenix_Components.png`, `docs/Phoenix_Task_State_Machine.png`
 - `docs/Phoenix_Design_Dialogue*.pdf`: how and why the design was reached
 - `RESUME.md`: where we are and what's next
