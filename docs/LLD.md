@@ -448,11 +448,14 @@ these endpoints and does not expose approve/reject.
 
 ## 9. Configuration
 
+Every value is an environment variable of the same name, validated at boot by `src/config.ts`.
+
 | Name | Default |
 |---|---|
+| `DATABASE_URL` | required, no default |
 | `LEASE_SECONDS` | 30 |
 | `HEARTBEAT_MS` | 10000 |
-| `POLL_MS` / jitter | 5000 / ±1000 |
+| `POLL_MS` / `POLL_JITTER_MS` | 5000 / ±1000 |
 | `STEP_MAX_ATTEMPTS` | 5 |
 | `BACKOFF_BASE_MS` / `BACKOFF_CAP_MS` | 1000 / 30000 |
 | `OUTBOX_MAX_ATTEMPTS` | 8 |
