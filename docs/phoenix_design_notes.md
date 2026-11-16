@@ -113,3 +113,7 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
 - Seed script (PHX-012, 16 Nov 2026): `testing/seed.ts` (`npm run seed -- "<goal>"`)
   inserts a PENDING task straight into Postgres. DEV/TEST ONLY: it bypasses the API, which
   stays the product's only task writer (HLD §4). Needed until `POST /tasks` (PHX-043).
+- Phase 1 workflow (PHX-013, 16 Nov 2026): `src/workflows.ts` `runTask` is hard-coded and
+  naive on purpose: fetch → summarise each source → report, results only in memory.
+  "fetch" reads `input.sources` (texts) from the task row; the real `fetch_page` (web) is
+  phase 7. Step ids: 1 = fetch, 2..N+1 = summaries, N+2 = report.
