@@ -117,3 +117,9 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   naive on purpose: fetch → summarise each source → report, results only in memory.
   "fetch" reads `input.sources` (texts) from the task row; the real `fetch_page` (web) is
   phase 7. Step ids: 1 = fetch, 2..N+1 = summaries, N+2 = report.
+- Phase 1 worker (PHX-014, 16 Nov 2026): `workOnce` = SELECT a PENDING task, UPDATE it to
+  RUNNING, run, mark DONE. Naive on purpose: the SELECT→UPDATE gap lets two workers run
+  the same task (test widens the ~1 ms gap to 50 ms to make it deterministic).
+  TEMPORARY DEVIATION from LLD §3.1/§5.1: if the workflow throws, the task is marked
+  FAILED with `failure_reason`, because with no leases yet "leave it alone" would mean
+  RUNNING forever. Replaced by retries (phase 3) and lease expiry (phase 5).
