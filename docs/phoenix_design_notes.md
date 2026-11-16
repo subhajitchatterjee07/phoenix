@@ -100,3 +100,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   them) so the fake can count calls per (task, step); the chaos assertion "LLM calls per
   saved step = 1" reads `GET /stats`. Rejected: counting by a hash of the prompt (two
   steps with the same prompt would merge).
+- Image and paths (PHX-010, 16 Nov 2026): one multi-stage Node image (`phoenix-app`)
+  compiles `src/` and `testing/` to `dist/src` and `dist/testing`, so commands are
+  `node dist/src/<box>.js`; `migrations/` is copied to `dist/migrations`. Inside compose,
+  `DATABASE_URL` uses host `postgres`. Fake LLM listens on 9001 (HLD §8; PHX-009 had 8090
+  by mistake).

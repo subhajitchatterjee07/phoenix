@@ -471,7 +471,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 
 | Tool | Purpose |
 |---|---|
-| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-8090}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
+| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
 | `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
