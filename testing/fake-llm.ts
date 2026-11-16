@@ -44,7 +44,7 @@ export function buildFakeLlm() {
 
 // CLI entry: npm run fake-llm
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const port = Number(process.env.FAKE_LLM_PORT ?? 8090);
+  const port = Number(process.env.FAKE_LLM_PORT ?? 9001);
   await buildFakeLlm().listen({ host: "0.0.0.0", port });
   console.log(`fake LLM on http://localhost:${port}/v1`);
 }
