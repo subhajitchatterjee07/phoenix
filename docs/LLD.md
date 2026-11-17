@@ -228,10 +228,14 @@ inputHash = sha256(canonicalJson({ type, args }))
 | HTTP 5xx | transient | retry |
 | HTTP 400/401/403/404/422, MCP tool error result | permanent | record ERROR, continue task |
 | transient still failing after max attempts | permanent | record ERROR, continue task |
+| HTTP 408 | transient | retry |
+| our own `signal` aborted (lease lost) | `Fenced` | never retry; drop the task (rule 5) |
 
 Backoff: `delay = Math.random() * Math.min(cap, base * 2 ** attempt)`, base 1 s, cap 30 s,
 max 5 attempts. `Math.random()` here only affects timing, not results or branches, so it's safe.
 Pass `ctx.signal` to `fetch` and to the LLM/MCP clients so a fenced worker stops waiting.
+Classification happens at each tool's boundary: `classifyHttp(status, message, retryAfter)` in
+`step.ts` (seconds or HTTP-date `Retry-After`); `tools/llm.ts` maps the `openai` client's errors.
 
 ### 4.4 Event loop rule (TypeScript-specific)
 The heartbeat is a `setInterval` on the **same event loop** as the steps. Synchronous

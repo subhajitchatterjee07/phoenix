@@ -60,6 +60,21 @@ export class TransientError extends Error {
   }
 }
 
+/** LLD §4.3 for any HTTP status: 429, 408 and 5xx are worth retrying; any other 4xx is not. */
+export function classifyHttp(status: number, message: string, retryAfter?: string | null): TransientError | PermanentError {
+  if (status === 429 || status === 408 || status >= 500) return new TransientError(message, retryAfterMs(retryAfter));
+  return new PermanentError(message);
+}
+
+/** Retry-After is either seconds ("7") or an HTTP date; anything else means "no hint". */
+function retryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now()); // timing only, never a result
+}
+
 // ---- step() (LLD §4.2) ----
 
 /** What a step function returns: its value, and the LLM tokens it spent (omit for 0). */

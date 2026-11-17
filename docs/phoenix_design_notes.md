@@ -165,3 +165,9 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   set by env or at runtime via `POST /faults` so a chaos run can switch faults on without
   restarting the fake (which would reset its counters). Failed calls are counted too, so
   phase 3 can see retries in `/stats`.
+- Error classification (PHX-025, 18 Nov 2026): each tool turns its failures into LLD §4.3
+  types at its boundary, so `step()`'s retries only ask "transient or permanent?".
+  429/408/5xx/timeout/connection → `TransientError` (429 carries `Retry-After`); other 4xx →
+  `PermanentError`; our own aborted signal → `Fenced` (only a lost lease aborts it, so it is
+  never retried). A 404 is permanent for the STEP, not the task. "LLM reply has no content"
+  stays unclassified until real data says whether it is a glitch or a content filter.
