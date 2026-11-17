@@ -18,11 +18,10 @@ emails, no re-paid LLM work for finished steps, and the same result.
 - `RESUME.md`: where we are and what's next
 
 ## How I want to work (important)
-- I am learning. I write the core logic myself; you guide, review and ask questions.
-- Core logic I write: the @step wrapper, the claim/renew queries, guarded writes, the
-  events+outbox transaction, the dispatcher loop, replay.
-- You may write boilerplate when I ask: docker-compose, project setup, FastAPI wiring,
-  the fake LLM server, the fake email provider, test harness scaffolding.
+- Until v1.0, Claude writes every ticket, core logic included. I review and merge, and I
+  prepare for interviews after v1.0 (code deep-dives, models, guided coding practice).
+- PR descriptions are my later study material: always explain the why, the crash scenario,
+  and anything you got wrong along the way.
 - When I'm stuck, teach Socratically (see the socratic-tutor skill if installed): one question
   at a time, narrow the question before giving answers, explain directly after 2-3 failed tries.
 - Test my reasoning on new scenarios, not my recall of project details.

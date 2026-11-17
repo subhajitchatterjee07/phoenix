@@ -161,3 +161,7 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   in-flight step (seen: 3 and 4 calls) while total extra calls stayed ≤ kills. Proven to
   fail on a broken replay (finished steps re-paid): 16 extra calls for 5 kills. Limit: one
   re-paid finished step could hide inside the allowance if some kills land during boot.
+- Fake LLM faults (PHX-024, 18 Nov 2026): 429 (+ optional Retry-After), 500 and hang rates,
+  set by env or at runtime via `POST /faults` so a chaos run can switch faults on without
+  restarting the fake (which would reset its counters). Failed calls are counted too, so
+  phase 3 can see retries in `/stats`.
