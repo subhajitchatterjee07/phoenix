@@ -3,13 +3,13 @@ import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { createLlm } from "../src/tools/llm.js";
 import { Fenced } from "../src/step.js";
 import { workOnce } from "../src/worker.js";
-import { runTask, type Task } from "../src/workflows.js";
+import { runTaskPhase1, type Task } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
 import { seedTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 let db: pg.Pool;
 let drop: () => Promise<void>;
-let run: (task: Task) => ReturnType<typeof runTask>;
+let run: (task: Task) => ReturnType<typeof runTaskPhase1>;
 const fake = buildFakeLlm();
 const sources = { sources: ["a", "b", "c"] };
 const statusOf = async (id: number) => (await db.query("SELECT * FROM tasks WHERE task_id = $1", [id])).rows[0];
@@ -17,7 +17,7 @@ const statusOf = async (id: number) => (await db.query("SELECT * FROM tasks WHER
 beforeAll(async () => {
   ({ pool: db, drop } = await createTestDb("worker"));
   const llm = createLlm({ baseURL: `${await fake.listen({ port: 0 })}/v1`, apiKey: "k", model: "m", timeoutMs: 5_000 });
-  run = (task) => runTask(task, llm);
+  run = (task) => runTaskPhase1(task, llm);
 });
 afterAll(() => Promise.all([fake.close(), drop()]));
 beforeEach(async () => {
