@@ -128,3 +128,7 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   designed yet. Until it is, `saveEvent` THROWS a clear error for such results (nothing in
   phases 2-4 produces them). Parked as PHX-064 on the board, to be designed later.
   `withTransaction(fn, db = pool)` takes an optional pool so tests can use a throwaway database.
+- step() part 1 (PHX-018, 17 Nov 2026): `StepContext` gains optional `db` (tests only; the
+  worker never sets it), added to LLD §4.1. Until PHX-019, `step()` only replays: a saved
+  row is returned without calling `fn` (OK → value, ERROR → value); a step with no saved
+  row throws "running new steps arrives in PHX-019". Nothing calls `step()` yet.

@@ -182,6 +182,7 @@ interface StepContext {
   nextStepId: number;         // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal;        // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  db?: pg.Pool;               // tests only: a throwaway database; defaults to the process pool
 }
 
 type StepResult<T> = { ok: true; value: T } | { ok: false; error: string };  // recorded errors are values
