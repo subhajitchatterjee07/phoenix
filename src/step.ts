@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
+import { config } from "./config.js";
 import { loadEvent, saveEvent } from "./queries.js";
 
 /**
@@ -73,6 +74,50 @@ function retryAfterMs(value: string | null | undefined): number | undefined {
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
   const at = Date.parse(value);
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now()); // timing only, never a result
+}
+
+// ---- Retries inside a step (LLD §4.3) ----
+export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number };
+const policyFromConfig = (): RetryPolicy =>
+  ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS });
+
+/**
+ * Calls `attempt` until it succeeds. Only TransientError is retried (on the last attempt it becomes
+ * PermanentError); anything else passes through. Returns the result and the attempt count.
+ */
+export async function runWithRetries<T>(
+  attempt: () => Promise<T>,
+  signal: AbortSignal,
+  policy: RetryPolicy = policyFromConfig(),
+): Promise<{ result: T; attempts: number }> {
+  for (let n = 1; ; n++) {
+    try {
+      return { result: await attempt(), attempts: n };
+    } catch (err) {
+      if (!(err instanceof TransientError)) throw err;
+      if (n >= policy.maxAttempts) throw new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err });
+      // Full jitter: Math.random() only shifts WHEN we retry, never a result or a branch.
+      const backoff = Math.random() * Math.min(policy.capMs, policy.baseMs * 2 ** (n - 1));
+      // A 429's Retry-After wins over backoff, capped so one step never stalls the task for long.
+      await sleep(Math.min(err.retryAfterMs ?? backoff, policy.capMs), signal);
+    }
+  }
+}
+
+/** A wait the heartbeat can cut short: aborting the signal ends it at once with Fenced. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Fenced("lease lost before a retry"));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Fenced("lease lost while waiting to retry"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 // ---- step() (LLD §4.2) ----

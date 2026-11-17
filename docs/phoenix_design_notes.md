@@ -171,3 +171,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   `PermanentError`; our own aborted signal → `Fenced` (only a lost lease aborts it, so it is
   never retried). A 404 is permanent for the STEP, not the task. "LLM reply has no content"
   stays unclassified until real data says whether it is a glitch or a content filter.
+- Retries (PHX-026, 18 Nov 2026): `runWithRetries` in `step.ts`, wired into `step()`.
+  Full-jitter backoff per LLD §4.3; a 429's `Retry-After` replaces backoff but is CAPPED at
+  `BACKOFF_CAP_MS` (30 s), so a provider saying "wait an hour" cannot stall the task: after
+  5 attempts the step fails permanently instead. Only `TransientError` is retried. The wait
+  is abortable (lease lost → `Fenced`). `events.attempts` now holds the real count.
