@@ -132,3 +132,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   worker never sets it), added to LLD §4.1. Until PHX-019, `step()` only replays: a saved
   row is returned without calling `fn` (OK → value, ERROR → value); a step with no saved
   row throws "running new steps arrives in PHX-019". Nothing calls `step()` yet.
+- step() part 2 (PHX-019, 17 Nov 2026): `fn` returns `StepOutput<T> = { value, tokens? }`
+  so `step()` can save `events.tokens` (LLM steps pass `reply.tokens`; others omit it).
+  If `fn` throws, nothing is saved and the error is rethrown (retries PHX-026, ERROR rows
+  PHX-027). The first run returns the JSON round-tripped value (via canonicalJson), so it is
+  identical to what replay returns; values JSON would change (Date, undefined) are rejected.
