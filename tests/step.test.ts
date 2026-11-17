@@ -79,3 +79,12 @@ it("two workers racing on one step: the slower save is Fenced, the faster one's 
   expect(outcomes.find((o) => o.status === "rejected")).toMatchObject({ reason: expect.any(Fenced) });
   expect(await loadEvent(taskId, 21, db)).toMatchObject({ result: "mine" });
 });
+
+it("retries a transient failure inside the step and saves how many attempts it took", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0); // zero backoff: no real waiting
+  let calls = 0;
+  const flaky = async () => { calls++; if (calls < 3) throw new TransientError("503"); return { value: "third time" }; };
+  expect(await step({ ...ctx(), nextStepId: 30 }, "t", {}, flaky)).toEqual({ ok: true, value: "third time" });
+  expect(await loadEvent(taskId, 30, db)).toMatchObject({ attempts: 3 });
+  vi.restoreAllMocks();
+});
