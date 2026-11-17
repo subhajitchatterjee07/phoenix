@@ -8,8 +8,7 @@ Tickets live on the [build board](https://claude.ai/artifact/RUKvrgK8Mg2STL5RY7w
 |---|---|---|
 | `main` | Release PRs from `dev` only | Every merge is tagged (`v0.1.0`, ...) |
 | `dev` | PRs from personal branches | Must always build and pass tests |
-| `subhajit/PHX-0xx-short-name` | Subhajit's tickets | Branch from `dev` |
-| `claude/PHX-0xx-short-name` | Claude's tickets | Branch from `dev` |
+| `PHX-0xx-short-name` | Every ticket, whoever writes it | Branch from `dev` |
 | `hotfix/PHX-0xx-short-name` | Urgent fixes | Branch from `main` |
 
 No direct pushes to `main` or `dev`; a ruleset enforces it.
