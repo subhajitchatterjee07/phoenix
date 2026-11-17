@@ -154,3 +154,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   sets the task back to PENDING (test-only; no product code). First run: 20 kills on a
   201-step task → DONE, 220 LLM calls, 19 steps called exactly twice (the one in flight at
   each kill), no saved step ever paid again.
+- Chaos 2 pass rules (PHX-023, 18 Nov 2026): the only LLM call allowed to repeat is the step
+  IN FLIGHT at a kill (called, never saved). Steps run one at a time, so each crash wastes at
+  most one call: (1) DONE with all steps saved, (2) every step called ≥ 1, (3) extra calls
+  ≤ kills. A first "at most twice per step" rule was wrong: two kills can land in the same
+  in-flight step (seen: 3 and 4 calls) while total extra calls stayed ≤ kills. Proven to
+  fail on a broken replay (finished steps re-paid): 16 extra calls for 5 kills. Limit: one
+  re-paid finished step could hide inside the allowance if some kills land during boot.
