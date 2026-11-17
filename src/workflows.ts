@@ -21,6 +21,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
 
   // Steps 1..N: summarise each source
   const summaries: string[] = [];
+  let summarised = 0;
   for (const text of sources) {
     const summary = await step(ctx, "llm_summarize", { goal: task.goal, text }, async (a, meta) => {
       const reply = await llm.chat(
@@ -32,8 +33,12 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
       );
       return { value: reply.content, tokens: reply.tokens };
     });
-    summaries.push(valueOf(summary)); // saved in events: a restart replays it for free
+    // Saved in events either way, so a restart replays it for free. A source that failed for
+    // good is reported as missing and the task goes on (LLD §4.3: record ERROR, continue).
+    summaries.push(summary.ok ? summary.value : `not available (${summary.error})`);
+    if (summary.ok) summarised++;
   }
+  if (summarised === 0) throw new Error(`no source could be summarised: ${summaries.join("; ")}`);
 
   // Step N+1: write the report from all summaries
   const report = await step(ctx, "write_report", { goal: task.goal, summaries }, async (a, meta) => {
@@ -49,7 +54,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
   return valueOf(report);
 }
 
-/** Recorded ERROR results arrive in PHX-027; until then a failed step stops the task. */
+/** The report is the task's result: if it failed for good, there is nothing to deliver. */
 function valueOf<T>(result: StepResult<T>): T {
   if (!result.ok) throw new Error(result.error);
   return result.value;
