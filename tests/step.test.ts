@@ -1,7 +1,7 @@
 import type pg from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { loadEvent, saveEvent } from "../src/queries.js";
-import { Fenced, inputHash, NonDeterminism, step, TransientError, type StepContext } from "../src/step.js";
+import { Fenced, inputHash, NonDeterminism, PermanentError, step, TransientError, type StepContext } from "../src/step.js";
 import { seedTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
@@ -86,5 +86,29 @@ it("retries a transient failure inside the step and saves how many attempts it t
   const flaky = async () => { calls++; if (calls < 3) throw new TransientError("503"); return { value: "third time" }; };
   expect(await step({ ...ctx(), nextStepId: 30 }, "t", {}, flaky)).toEqual({ ok: true, value: "third time" });
   expect(await loadEvent(taskId, 30, db)).toMatchObject({ attempts: 3 });
+  vi.restoreAllMocks();
+});
+
+it("a permanent failure is saved as an ERROR row and replayed as-is, without calling fn again", async () => {
+  const fn = vi.fn(async () => { throw new PermanentError("HTTP 404 Not Found"); });
+  expect(await step({ ...ctx(), nextStepId: 40 }, "t", {}, fn)).toEqual({ ok: false, error: "HTTP 404 Not Found" });
+  expect(await step({ ...ctx(), nextStepId: 40 }, "t", {}, fn)).toEqual({ ok: false, error: "HTTP 404 Not Found" });
+  expect(fn).toHaveBeenCalledTimes(1); // the replay was a lookup
+  expect(await loadEvent(taskId, 40, db)).toMatchObject({ status: "ERROR", error: "HTTP 404 Not Found", attempts: 1, result: null });
+});
+
+it("transient failures that never clear end as an ERROR row with every attempt counted", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  const fn = vi.fn(async () => { throw new TransientError("503"); });
+  expect(await step({ ...ctx(), nextStepId: 41 }, "t", {}, fn)).toMatchObject({ ok: false, error: expect.stringMatching(/gave up after 5 attempts: 503/) });
+  expect(await loadEvent(taskId, 41, db)).toMatchObject({ status: "ERROR", attempts: 5 });
+  vi.restoreAllMocks();
+});
+
+it("a permanent failure after a retry records both attempts (503, then 404)", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  const errors = [new TransientError("503"), new PermanentError("HTTP 404 Not Found")];
+  await step({ ...ctx(), nextStepId: 42 }, "t", {}, async () => { throw errors.shift(); });
+  expect(await loadEvent(taskId, 42, db)).toMatchObject({ status: "ERROR", attempts: 2 });
   vi.restoreAllMocks();
 });

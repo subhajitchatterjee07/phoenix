@@ -53,7 +53,10 @@ export type StepResult<T> = { ok: true; value: T } | { ok: false; error: string 
 export class Suspend extends Error { override name = "Suspend"; } // task paused (approval): stop executing
 export class Fenced extends Error { override name = "Fenced"; } // my write was rejected: drop the task
 export class NonDeterminism extends Error { override name = "NonDeterminism"; } // saved step replayed with other args
-export class PermanentError extends Error { override name = "PermanentError"; }
+export class PermanentError extends Error {
+  override name = "PermanentError";
+  attempts = 1; // set by runWithRetries, saved as events.attempts
+}
 export class TransientError extends Error {
   override name = "TransientError";
   constructor(message: string, public readonly retryAfterMs?: number) {
@@ -94,8 +97,11 @@ export async function runWithRetries<T>(
     try {
       return { result: await attempt(), attempts: n };
     } catch (err) {
+      if (err instanceof PermanentError) err.attempts = n;
       if (!(err instanceof TransientError)) throw err;
-      if (n >= policy.maxAttempts) throw new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err });
+      if (n >= policy.maxAttempts) {
+        throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
+      }
       // Full jitter: Math.random() only shifts WHEN we retry, never a result or a branch.
       const backoff = Math.random() * Math.min(policy.capMs, policy.baseMs * 2 ** (n - 1));
       // A 429's Retry-After wins over backoff, capped so one step never stalls the task for long.
@@ -151,26 +157,37 @@ export async function step<A, T>(
   // 2. A fenced worker starts no new work. Step limit and token budget: PHX-039.
   if (ctx.signal.aborted) throw new Fenced(`task ${ctx.taskId} step ${stepId}: lease lost, not running ${type}`);
 
-  // 3. Run, retrying transient failures (LLD §4.3). If it still throws, nothing is saved: the
-  //    step never happened, as after a crash. Recorded ERROR rows arrive in PHX-027.
-  const { result: output, attempts } = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal);
-  const { value, tokens = 0 } = output;
-  // Return exactly what a replay will return (JSON), and reject values JSON would change.
-  const result = JSON.parse(canonicalJson(value)) as T;
+  // 3. Run, retrying transient failures (LLD §4.3). A permanent failure is an OUTCOME: it is
+  //    saved as an ERROR row below and replayed as-is. Anything else (Fenced, a bug) propagates
+  //    and nothing is saved: the step never happened, as after a crash.
+  let outcome: StepResult<T>;
+  let attempts: number;
+  let tokens = 0;
+  try {
+    const run = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal);
+    // Return exactly what a replay will return (JSON), and reject values JSON would change.
+    outcome = { ok: true, value: JSON.parse(canonicalJson(run.result.value)) as T };
+    ({ attempts } = run);
+    tokens = run.result.tokens ?? 0;
+  } catch (err) {
+    if (!(err instanceof PermanentError)) throw err;
+    outcome = { ok: false, error: err.message };
+    attempts = err.attempts;
+  }
 
   // 4. Save. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
   //    duplicate key means another worker saved this step first: we lost, so drop the task
   //    (design rule 5), exactly as a rejected guarded write will.
   try {
     await saveEvent(
-      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: "OK", result, error: null, attempts, tokens, fencingToken: ctx.token },
+      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: outcome.ok ? "OK" : "ERROR", result: outcome.ok ? outcome.value : undefined, error: outcome.ok ? null : outcome.error, attempts, tokens, fencingToken: ctx.token },
       ctx.db,
     );
   } catch (err) {
     if ((err as { code?: string }).code !== "23505") throw err;
     throw new Fenced(`task ${ctx.taskId} step ${stepId}: another worker already saved it`, { cause: err });
   }
-  return { ok: true, value: result };
+  return outcome;
 }
 
 // ---- Built-in steps for the two everyday sources of non-determinism (LLD §4.5) ----

@@ -176,3 +176,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   `BACKOFF_CAP_MS` (30 s), so a provider saying "wait an hour" cannot stall the task: after
   5 attempts the step fails permanently instead. Only `TransientError` is retried. The wait
   is abortable (lease lost → `Fenced`). `events.attempts` now holds the real count.
+- Recorded failures (PHX-027, 18 Nov 2026): when retries end in `PermanentError`, `step()`
+  saves an ERROR row (message, real attempt count, no result) and returns `{ ok: false }`;
+  replay returns it without calling `fn`. The workflow (approved) CONTINUES without a failed
+  source: the report is told "Source N: not available (reason)". The task fails only if
+  every summary failed or the report step itself failed (nothing to deliver).

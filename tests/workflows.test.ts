@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import type { StepContext } from "../src/step.js";
+import { inputHash, PermanentError, type StepContext } from "../src/step.js";
 import { createLlm } from "../src/tools/llm.js";
 import { runTask } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
@@ -42,4 +42,23 @@ it("FIXED (phase 1 BASELINE PROBLEM): a re-run after a crash pays for nothing, s
 
 it("rejects a task whose input has no sources", async () => {
   await expect(runTask(ctx(), { ...t, input: {} }, llm)).rejects.toThrow(/sources/);
+});
+
+// An LLM that fails for good on the given source texts (like a 404 on a fetched page).
+const failingOn = (...texts: string[]): typeof llm => ({
+  chat: (messages, call) =>
+    texts.includes(String(messages[1]?.content)) ? Promise.reject(new PermanentError("HTTP 404 Not Found")) : llm.chat(messages, call),
+});
+
+it("a source that fails for good is reported as missing; the task still produces a report", async () => {
+  expect(await runTask(ctx(), t, failingOn("text B"))).toMatch(/^fake answer /);
+  const { rows } = await db.query("SELECT status, result_inline, input_hash FROM events WHERE task_id = $1 ORDER BY step_id", [t.taskId]);
+  expect(rows.map((r) => r.status)).toEqual(["OK", "ERROR", "OK", "OK"]);
+  // The report step was called with exactly these summaries: proof the gap was passed on.
+  const summaries = [rows[0].result_inline, "not available (HTTP 404 Not Found)", rows[2].result_inline];
+  expect(rows[3].input_hash).toBe(inputHash("write_report", { goal: t.goal, summaries }));
+});
+
+it("fails the task when no source could be summarised", async () => {
+  await expect(runTask(ctx(), t, failingOn("text A", "text B", "text C"))).rejects.toThrow(/no source could be summarised/);
 });
