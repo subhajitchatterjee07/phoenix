@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import type pg from "pg";
 import { config } from "./config.js";
 import { pool } from "./db.js";
+import { Fenced } from "./step.js";
 import { runTask, type Task } from "./workflows.js";
 
 const WORKER_ID = hostname();
@@ -30,6 +31,11 @@ export async function workOnce(db: Db, run: (task: Task) => ReturnType<typeof ru
     await setStatus(db, "status = 'DONE', owner = NULL, tokens_used = tokens_used + $2", [task.taskId, tokens]);
     console.log(`task ${task.taskId} DONE by ${WORKER_ID}: ${report}`);
   } catch (err) {
+    if (err instanceof Fenced) {
+      // Another worker owns this task's work now: drop it, change nothing (design rule 5).
+      console.log(`task ${task.taskId} dropped by ${WORKER_ID}: ${err.message}`);
+      return task.taskId;
+    }
     // Phase 1 only: no retries or leases yet, so fail the task instead of leaving it stuck.
     await setStatus(db, "status = 'FAILED', owner = NULL, failure_reason = $2", [task.taskId, String(err)]);
     console.error(`task ${task.taskId} FAILED: ${String(err)}`);
