@@ -178,11 +178,12 @@ microservices), plus a separate stateless Python tools server:
 | Service | Command | Ports | Replicas |
 |---|---|---|---|
 | postgres | `postgres:16` | 5432 | 1 |
-| api | `node dist/api.js` | 8000 | 1 |
-| worker | `node dist/worker.js` | none | 3 |
-| dispatcher | `node dist/dispatcher.js` | none | 1 |
+| migrate | `node dist/src/migrate.js` (one-shot; others start after it exits 0) | none | 1 |
+| api | `node dist/src/api.js` | 8000 | 1 |
+| worker | `node dist/src/worker.js` | none | 3 |
+| dispatcher | `node dist/src/dispatcher.js` | none | 1 |
 | phoenix-tools | `python server.py` (MCP, Streamable HTTP) | 8100 (internal) | 1 |
-| fake-llm / fake-email (dev & chaos tests) | test servers | 9001 / 9002 | 1 |
+| fake-llm / fake-email (dev & chaos tests) | `node dist/testing/fake-llm.js` / `fake-email.js` | 9001 / 9002 | 1 |
 
 ---
 

@@ -14,7 +14,7 @@ outbox transaction, the dispatcher loop) are meant to be written by hand.
 | Postgres client | `pg` (Pool, explicit transactions) |
 | API | Fastify |
 | Validation (plans, registry args, API bodies) | zod |
-| LLM | OpenAI-compatible client pointed at OpenRouter (configurable) |
+| LLM | official `openai` npm client pointed at OpenRouter (base URL, key, model configurable) |
 | MCP client (in worker) | `@modelcontextprotocol/sdk` |
 | Tools server | **Python** MCP server (`phoenix-tools`), Streamable HTTP transport: calculations, analytics |
 | Tests | vitest |
@@ -25,7 +25,7 @@ phoenix/
   src/
     config.ts         # constants (§9)
     db.ts             # Pool, withTransaction(fn)
-    schema.sql        # DDL (§2)
+    migrate.ts        # applies migrations/*.sql in order (§2)
     queries.ts        # every SQL statement in §5, one function each
     step.ts           # step() wrapper, StepContext, errors (§4)
     registry.ts       # step types + zod arg schemas (§6)
@@ -37,6 +37,7 @@ phoenix/
     worker.ts         # entry: poll → claim → heartbeat → run → release (§5.1)
     dispatcher.ts     # entry: outbox loop (§7)
     api.ts            # entry: Fastify app (§8)
+  migrations/         # 001_init.sql = DDL (§2); later changes are new numbered files
   tools-server/       # Python, separate image
     server.py         # MCP server: calculate, analyze_table, describe_stats ... (§6.3)
     pyproject.toml
@@ -120,6 +121,9 @@ CREATE TABLE decisions (
 ```
 
 Notes
+- The DDL lives in `migrations/001_init.sql`; `src/migrate.ts` also creates
+  `schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ)` to record applied files.
+  Schema changes are new numbered files, never edits to applied ones (design notes, PHX-006).
 - `result_inline` vs `result_pointer`: store under ~64 KB inline, larger in blob storage.
 - `input_hash` lets replay detect that a saved step was called with different arguments,
   which means non-determinism or a code change (throw, don't silently continue).
@@ -444,17 +448,21 @@ these endpoints and does not expose approve/reject.
 
 ## 9. Configuration
 
+Every value is an environment variable of the same name, validated at boot by `src/config.ts`.
+
 | Name | Default |
 |---|---|
+| `DATABASE_URL` | required, no default |
 | `LEASE_SECONDS` | 30 |
 | `HEARTBEAT_MS` | 10000 |
-| `POLL_MS` / jitter | 5000 / ±1000 |
+| `POLL_MS` / `POLL_JITTER_MS` | 5000 / ±1000 |
 | `STEP_MAX_ATTEMPTS` | 5 |
 | `BACKOFF_BASE_MS` / `BACKOFF_CAP_MS` | 1000 / 30000 |
 | `OUTBOX_MAX_ATTEMPTS` | 8 |
 | `DEFAULT_MAX_STEPS` | 200 |
 | `INLINE_RESULT_MAX_BYTES` | 65536 |
 | `LLM_TIMEOUT_MS` | 60000 |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | the fake: `http://localhost:9001/v1` / `fake` / `fake` (compose: `http://fake-llm:9001/v1`). Real: `https://openrouter.ai/api/v1` / your key / e.g. `deepseek/deepseek-chat` |
 | `MCP_TOOLS_URL` | `http://phoenix-tools:8100/mcp` |
 | `MCP_ALLOWLIST` | `{ "phoenix-tools": ["calculate","analyze_table","describe_stats","query_analytics"] }` |
 
@@ -464,7 +472,7 @@ these endpoints and does not expose approve/reject.
 
 | Tool | Purpose |
 |---|---|
-| `fake-llm` | Configurable 429 rate, latency, timeouts, `Retry-After`; counts calls per (task, step) |
+| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
 | `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
