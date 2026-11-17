@@ -5,7 +5,7 @@ import type pg from "pg";
 import { config } from "./config.js";
 import { pool } from "./db.js";
 import { Fenced } from "./step.js";
-import { runTask, type Task } from "./workflows.js";
+import { runTaskPhase1, type Task } from "./workflows.js";
 
 const WORKER_ID = hostname();
 type Db = Pick<pg.Pool, "query">;
@@ -17,7 +17,7 @@ const setStatus = (db: Db, sql: string, params: unknown[]) =>
  * Runs at most one PENDING task; returns its id, or null if there was none.
  * Fixed later: atomic claim + lease (PHX-036..040), retries (PHX-026).
  */
-export async function workOnce(db: Db, run: (task: Task) => ReturnType<typeof runTask> = runTask) {
+export async function workOnce(db: Db, run: (task: Task) => ReturnType<typeof runTaskPhase1> = runTaskPhase1) {
   const { rows } = await db.query<Task>(
     `SELECT task_id AS "taskId", goal, input FROM tasks WHERE status = 'PENDING' ORDER BY created_at LIMIT 1`,
   );
