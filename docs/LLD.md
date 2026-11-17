@@ -483,7 +483,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
 | `chaos/block-loop` | A test step that blocks the event loop for 40 s (reproduces §4.4) |
-| Assertions | LLM/MCP calls per saved step = 1; deliveries per key = 1; takeover ≤ 35 s; task reaches DONE |
+| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Deliveries per key = 1; takeover ≤ 35 s |
 
 ---
 
