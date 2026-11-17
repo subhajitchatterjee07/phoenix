@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { createLlm } from "../src/tools/llm.js";
+import { Fenced } from "../src/step.js";
 import { workOnce } from "../src/worker.js";
 import { runTask, type Task } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
@@ -35,6 +36,12 @@ it("marks the task FAILED with the reason when the workflow throws (phase 1 only
   const id = await seedTask(db, "goal", { sources: [] });
   await workOnce(db, run);
   expect(await statusOf(id)).toMatchObject({ status: "FAILED", failure_reason: expect.stringMatching(/sources/) });
+});
+
+it("drops a task on Fenced: no FAILED, status left as the other worker sets it (design rule 5)", async () => {
+  const id = await seedTask(db, "goal", sources);
+  expect(await workOnce(db, async () => { throw new Fenced("another worker already saved step 1"); })).toBe(id);
+  expect(await statusOf(id)).toMatchObject({ status: "RUNNING", failure_reason: null });
 });
 
 it("BASELINE PROBLEM: two workers polling together both run the same task", async () => {
