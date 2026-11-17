@@ -39,3 +39,15 @@ it("counts calls per (task, step) and resets", async () => {
 it("rejects a request without messages with a 400, like the real API", async () => {
   await expect(llm.chat.completions.create({ model: "m", messages: [] })).rejects.toMatchObject({ status: 400 });
 });
+
+it("latency: waits before answering, but counts the call as soon as it arrives", async () => {
+  const slow = buildFakeLlm({ latencyMs: 300 });
+  const client = new OpenAI({ baseURL: `${await slow.listen({ host: "127.0.0.1", port: 0 })}/v1`, apiKey: "k" });
+  const started = Date.now();
+  const pending = client.chat.completions.create({ model: "m", messages }, forStep(9, 1));
+  await new Promise((r) => setTimeout(r, 100));
+  expect((await slow.inject({ url: "/stats" })).json()).toEqual({ "9:1": 1 }); // counted before the answer
+  await pending;
+  expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+  await slow.close();
+});

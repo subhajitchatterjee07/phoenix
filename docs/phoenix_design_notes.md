@@ -147,3 +147,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   `Fenced`, and the worker drops the task without changing its status (design rule 5).
   The phase 1 "fetch" (reading `input.sources`) is not a step: it is deterministic, so step
   ids are 1..N = summaries, N+1 = report.
+- Chaos kill loop (PHX-022, 18 Nov 2026): the fake LLM's latency knob
+  (`FAKE_LLM_LATENCY_MS`) is pulled forward from PHX-024 so tasks last long enough for a
+  kill to land mid-task; the call is counted on arrival, so a call cut off by a kill still
+  counts. Until leases (phase 5), the harness SIMULATES LEASE EXPIRY: after each kill it
+  sets the task back to PENDING (test-only; no product code). First run: 20 kills on a
+  201-step task → DONE, 220 LLM calls, 19 steps called exactly twice (the one in flight at
+  each kill), no saved step ever paid again.
