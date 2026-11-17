@@ -151,9 +151,10 @@ export async function step<A, T>(
   // 2. A fenced worker starts no new work. Step limit and token budget: PHX-039.
   if (ctx.signal.aborted) throw new Fenced(`task ${ctx.taskId} step ${stepId}: lease lost, not running ${type}`);
 
-  // 3. Run once. If fn throws, nothing is saved: the step never happened, as after a crash.
-  //    Retries arrive in PHX-026, recorded ERROR rows in PHX-027.
-  const { value, tokens = 0 } = await fn(args, { stepId, signal: ctx.signal });
+  // 3. Run, retrying transient failures (LLD §4.3). If it still throws, nothing is saved: the
+  //    step never happened, as after a crash. Recorded ERROR rows arrive in PHX-027.
+  const { result: output, attempts } = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal);
+  const { value, tokens = 0 } = output;
   // Return exactly what a replay will return (JSON), and reject values JSON would change.
   const result = JSON.parse(canonicalJson(value)) as T;
 
@@ -162,7 +163,7 @@ export async function step<A, T>(
   //    (design rule 5), exactly as a rejected guarded write will.
   try {
     await saveEvent(
-      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: "OK", result, error: null, attempts: 1, tokens, fencingToken: ctx.token },
+      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: "OK", result, error: null, attempts, tokens, fencingToken: ctx.token },
       ctx.db,
     );
   } catch (err) {
