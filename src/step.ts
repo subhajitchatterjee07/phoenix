@@ -102,3 +102,22 @@ export async function step<A, T>(
   );
   return { ok: true, value: result };
 }
+
+// ---- Built-in steps for the two everyday sources of non-determinism (LLD §4.5) ----
+// Workflow code must never call Date.now() or Math.random() directly (ESLint enforces it in
+// src/workflows.ts): a replay would see a different value and could take a different branch.
+
+/** The current time in epoch milliseconds, read once and replayed forever after. */
+export async function now(ctx: StepContext): Promise<number> {
+  return expectOk(await step(ctx, "now", {}, async () => ({ value: Date.now() })));
+}
+
+/** A random number in [0, 1), drawn once and replayed forever after. */
+export async function random(ctx: StepContext): Promise<number> {
+  return expectOk(await step(ctx, "random", {}, async () => ({ value: Math.random() })));
+}
+
+function expectOk<T>(result: StepResult<T>): T {
+  if (!result.ok) throw new Error(`built-in step failed: ${result.error}`); // cannot happen: never saved as ERROR
+  return result.value;
+}
