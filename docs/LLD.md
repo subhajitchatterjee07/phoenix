@@ -477,9 +477,10 @@ Every value is an environment variable of the same name, validated at boot by `s
 
 | Tool | Purpose |
 |---|---|
-| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
+| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`; `FAKE_LLM_LATENCY_MS` (call counted on arrival). Later: 429 rate, timeouts, `Retry-After` (PHX-024) |
 | `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
+| `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
 | `chaos/block-loop` | A test step that blocks the event loop for 40 s (reproduces §4.4) |
 | Assertions | LLM/MCP calls per saved step = 1; deliveries per key = 1; takeover ≤ 35 s; task reaches DONE |

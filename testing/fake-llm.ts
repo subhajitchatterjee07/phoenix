@@ -3,10 +3,11 @@ import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 
 // An OpenRouter-shaped fake: point the `openai` client's baseURL here instead of
-// https://openrouter.ai/api/v1 and nothing else changes. Fault knobs come in PHX-024.
+// https://openrouter.ai/api/v1 and nothing else changes. Latency now (chaos tests need slow
+// tasks to kill mid-way); 429 / Retry-After / timeout knobs come in PHX-024.
 type ChatBody = { model?: string; messages?: unknown[] };
 
-export function buildFakeLlm() {
+export function buildFakeLlm({ latencyMs = 0 } = {}) {
   const app = Fastify();
   const calls = new Map<string, number>(); // "task:step" → number of LLM calls
 
@@ -16,7 +17,8 @@ export function buildFakeLlm() {
       return reply.code(400).send({ error: { message: "messages is required", type: "invalid_request_error" } });
     }
     const key = `${String(req.headers["x-phoenix-task"] ?? "?")}:${String(req.headers["x-phoenix-step"] ?? "?")}`;
-    calls.set(key, (calls.get(key) ?? 0) + 1);
+    calls.set(key, (calls.get(key) ?? 0) + 1); // counted on arrival: a caller killed mid-wait still made the call
+    if (latencyMs > 0) await new Promise((r) => setTimeout(r, latencyMs));
 
     // Deterministic: the same messages always get the same answer and token counts.
     const prompt = JSON.stringify(messages);
@@ -45,6 +47,6 @@ export function buildFakeLlm() {
 // CLI entry: npm run fake-llm
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.FAKE_LLM_PORT ?? 9001);
-  await buildFakeLlm().listen({ host: "0.0.0.0", port });
+  await buildFakeLlm({ latencyMs: Number(process.env.FAKE_LLM_LATENCY_MS ?? 0) }).listen({ host: "0.0.0.0", port });
   console.log(`fake LLM on http://localhost:${port}/v1`);
 }

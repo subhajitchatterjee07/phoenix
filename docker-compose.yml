@@ -60,7 +60,7 @@ services:
   fake-llm:
     <<: *app
     command: ["node", "dist/testing/fake-llm.js"]
-    environment: { FAKE_LLM_PORT: 9001 }
+    environment: { FAKE_LLM_PORT: 9001, FAKE_LLM_LATENCY_MS: "${FAKE_LLM_LATENCY_MS:-0}" }
     ports: ["9001:9001"]
 
 volumes:
