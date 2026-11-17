@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { saveEvent, type NewEvent } from "../src/queries.js";
+import { loadEvent, saveEvent, type NewEvent } from "../src/queries.js";
 import { createTestDb } from "../testing/test-db.js";
 import { seedTask } from "../testing/seed.js";
 
@@ -39,4 +39,21 @@ it("rejects a second save of the same step, and rolls its token update back", as
 it("refuses a result over INLINE_RESULT_MAX_BYTES with a clear error, saving nothing", async () => {
   await expect(saveEvent(event(4, { result: "x".repeat(70_000) }), db)).rejects.toThrow(/INLINE_RESULT_MAX_BYTES.*PHX-064/);
   expect(await row(4)).toBeUndefined();
+});
+
+it("loadEvent returns exactly what saveEvent stored", async () => {
+  expect(await loadEvent(taskId, 1, db)).toEqual({
+    stepType: "llm_summarize", inputHash: "h".repeat(64), status: "OK",
+    result: { summary: "s", items: ["a", "b"] }, error: null, attempts: 1, tokens: 10,
+  });
+  expect((await loadEvent(taskId, 2, db))?.result).toEqual(["x", "y"]);
+});
+
+it("loadEvent returns null for a step that never finished", async () => {
+  expect(await loadEvent(taskId, 99, db)).toBeNull();
+});
+
+it("loadEvent returns a recorded ERROR as a value: no result, the error text", async () => {
+  await saveEvent(event(3, { status: "ERROR", result: undefined, error: "404 Not Found", attempts: 5 }), db);
+  expect(await loadEvent(taskId, 3, db)).toMatchObject({ status: "ERROR", result: null, error: "404 Not Found", attempts: 5 });
 });
