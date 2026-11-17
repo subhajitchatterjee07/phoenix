@@ -123,3 +123,8 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   TEMPORARY DEVIATION from LLD §3.1/§5.1: if the workflow throws, the task is marked
   FAILED with `failure_reason`, because with no leases yet "leave it alone" would mean
   RUNNING forever. Replaced by retries (phase 3) and lease expiry (phase 5).
+- Large step results (PHX-017, 17 Nov 2026): LLD §2 sends results over
+  `INLINE_RESULT_MAX_BYTES` (64 KB) to blob storage via `result_pointer`, but no blob store is
+  designed yet. Until it is, `saveEvent` THROWS a clear error for such results (nothing in
+  phases 2-4 produces them). Parked as PHX-064 on the board, to be designed later.
+  `withTransaction(fn, db = pool)` takes an optional pool so tests can use a throwaway database.

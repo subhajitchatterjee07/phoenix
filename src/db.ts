@@ -13,9 +13,10 @@ pg.types.setTypeParser(pg.types.builtins.INT8, (text) => {
 /** The one pool for this process. Never build another; never use it inside withTransaction's fn. */
 export const pool = new pg.Pool({ connectionString: config.DATABASE_URL });
 
-/** BEGIN, run fn on ONE client, COMMIT; on any throw ROLLBACK and rethrow. Always releases. */
-export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
+/** BEGIN, run fn on ONE client, COMMIT; on any throw ROLLBACK and rethrow. Always releases.
+ *  `db` defaults to the process pool; tests pass a throwaway database's pool. */
+export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>, db: pg.Pool = pool): Promise<T> {
+  const client = await db.connect();
   let broken: Error | undefined;
   try {
     await client.query("BEGIN");
