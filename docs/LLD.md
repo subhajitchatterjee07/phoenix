@@ -233,6 +233,9 @@ inputHash = sha256(canonicalJson({ type, args }))
 
 Backoff: `delay = Math.random() * Math.min(cap, base * 2 ** attempt)`, base 1 s, cap 30 s,
 max 5 attempts. `Math.random()` here only affects timing, not results or branches, so it's safe.
+`Retry-After` replaces the backoff for that wait but is capped at `BACKOFF_CAP_MS` (30 s), so one
+step never stalls a task for long; a wait is cut short by an aborted signal (→ `Fenced`).
+`step()` saves the attempt count in `events.attempts`.
 Pass `ctx.signal` to `fetch` and to the LLM/MCP clients so a fenced worker stops waiting.
 Classification happens at each tool's boundary: `classifyHttp(status, message, retryAfter)` in
 `step.ts` (seconds or HTTP-date `Retry-After`); `tools/llm.ts` maps the `openai` client's errors.
