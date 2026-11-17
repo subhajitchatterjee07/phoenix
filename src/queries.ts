@@ -14,6 +14,17 @@ export type SavedEvent = {
   tokens: number;
 };
 
+/** A finished step's saved row (LLD §4.2 step 1), or null if the step never finished. */
+export async function loadEvent(taskId: number, stepId: number, db: pg.Pool = pool): Promise<SavedEvent | null> {
+  const { rows } = await db.query<SavedEvent>(
+    `SELECT step_type AS "stepType", input_hash AS "inputHash", status, result_inline AS result,
+            error, attempts, tokens
+     FROM events WHERE task_id = $1 AND step_id = $2`,
+    [taskId, stepId],
+  );
+  return rows[0] ?? null;
+}
+
 export type NewEvent = SavedEvent & { taskId: number; stepId: number; fencingToken: number };
 
 /**
