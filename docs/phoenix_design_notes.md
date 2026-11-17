@@ -141,3 +141,9 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   plain functions in `step.ts`, not `ctx.now()` methods, so `StepContext` stays plain data.
   ESLint bans `Date.now()`, `new Date()` (no args), `Math.random()`, `crypto.randomUUID()`
   and `fetch` in `src/workflows.ts`; file I/O and MCP calls are left to review (rule 1).
+- Porting the workflow (PHX-021, 17 Nov 2026): `fn(args, { stepId, signal })` so LLM steps
+  can tag `X-Phoenix-Step` and pass the abort signal (LLD §4.3). Until the fencing guard
+  (PHX-038), a duplicate key on save (another worker saved the step first) is thrown as
+  `Fenced`, and the worker drops the task without changing its status (design rule 5).
+  The phase 1 "fetch" (reading `input.sources`) is not a step: it is deterministic, so step
+  ids are 1..N = summaries, N+1 = report.
