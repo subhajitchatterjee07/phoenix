@@ -186,6 +186,8 @@ interface StepContext {
 }
 
 type StepResult<T> = { ok: true; value: T } | { ok: false; error: string };  // recorded errors are values
+type StepOutput<T> = { value: T; tokens?: number };  // what fn returns; tokens feed events.tokens + the budget
+// step<A, T>(ctx, type, args: A, fn: (args: A) => Promise<StepOutput<T>>): Promise<StepResult<T>>
 
 class Suspend extends Error {}        // task paused (approval): stop executing
 class Fenced extends Error {}         // my write was rejected: drop the task
