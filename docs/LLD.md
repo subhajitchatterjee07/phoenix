@@ -241,7 +241,8 @@ to `worker_threads` or to the Python tools server.
 
 ### 4.5 Determinism rules for workflow code
 - No `Date.now()`, `new Date()`, `Math.random()`, `crypto.randomUUID()`, `fetch`, file I/O or
-  MCP calls outside a step. Use `ctx.now()` / `ctx.random()` (tiny built-in steps).
+  MCP calls outside a step. Use `await now(ctx)` / `await random(ctx)` from `step.ts` (tiny
+  built-in steps). ESLint enforces the ban in `src/workflows.ts` (file I/O and MCP: review).
 - `Promise.all` over steps is not allowed in v1 (step ids must be assigned in a fixed order).
 - Don't iterate over unordered data to decide which steps to run (sort first).
 - Don't change the order of steps for tasks already in flight (L5).

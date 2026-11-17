@@ -137,3 +137,7 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   If `fn` throws, nothing is saved and the error is rethrown (retries PHX-026, ERROR rows
   PHX-027). The first run returns the JSON round-tripped value (via canonicalJson), so it is
   identical to what replay returns; values JSON would change (Date, undefined) are rejected.
+- Time and randomness (PHX-020, 17 Nov 2026): `now(ctx)` (epoch ms) and `random(ctx)` are
+  plain functions in `step.ts`, not `ctx.now()` methods, so `StepContext` stays plain data.
+  ESLint bans `Date.now()`, `new Date()` (no args), `Math.random()`, `crypto.randomUUID()`
+  and `fetch` in `src/workflows.ts`; file I/O and MCP calls are left to review (rule 1).
