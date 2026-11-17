@@ -64,3 +64,18 @@ it("defines the LLD §4.1 error classes", () => {
   expect(new NonDeterminism("x")).toBeInstanceOf(Error);
   expect(new TransientError("429", 2_000).retryAfterMs).toBe(2_000);
 });
+
+it("tells fn its step id and the abort signal", async () => {
+  const c = { ...ctx(), nextStepId: 20 };
+  const fn = vi.fn(async (_args: object, meta: { stepId: number; signal: AbortSignal }) => ({ value: meta.stepId }));
+  expect(await step(c, "t", {}, fn)).toEqual({ ok: true, value: 20 });
+  expect(fn.mock.calls[0]?.[1].signal).toBe(c.signal);
+});
+
+it("two workers racing on one step: the slower save is Fenced, the faster one's result is kept", async () => {
+  const slow = async () => { await new Promise((r) => setTimeout(r, 30)); return { value: "mine" }; };
+  const outcomes = await Promise.allSettled([step({ ...ctx(), nextStepId: 21 }, "t", {}, slow), step({ ...ctx(), nextStepId: 21 }, "t", {}, slow)]);
+  expect(outcomes.map((o) => o.status).sort()).toEqual(["fulfilled", "rejected"]);
+  expect(outcomes.find((o) => o.status === "rejected")).toMatchObject({ reason: expect.any(Fenced) });
+  expect(await loadEvent(taskId, 21, db)).toMatchObject({ result: "mine" });
+});

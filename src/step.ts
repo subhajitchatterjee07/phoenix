@@ -64,12 +64,14 @@ export class TransientError extends Error {
 
 /** What a step function returns: its value, and the LLM tokens it spent (omit for 0). */
 export type StepOutput<T> = { value: T; tokens?: number };
+/** What a step function is told: its id (e.g. for the X-Phoenix-Step header) and the abort signal. */
+export type StepMeta = { stepId: number; signal: AbortSignal };
 
 export async function step<A, T>(
   ctx: StepContext,
   type: string,
   args: A,
-  fn: (args: A) => Promise<StepOutput<T>>,
+  fn: (args: A, meta: StepMeta) => Promise<StepOutput<T>>,
 ): Promise<StepResult<T>> {
   const stepId = ctx.nextStepId++; // assigned in call order, so replay sees the same ids
   const hash = inputHash(type, args);
@@ -91,15 +93,22 @@ export async function step<A, T>(
 
   // 3. Run once. If fn throws, nothing is saved: the step never happened, as after a crash.
   //    Retries arrive in PHX-026, recorded ERROR rows in PHX-027.
-  const { value, tokens = 0 } = await fn(args);
+  const { value, tokens = 0 } = await fn(args, { stepId, signal: ctx.signal });
   // Return exactly what a replay will return (JSON), and reject values JSON would change.
   const result = JSON.parse(canonicalJson(value)) as T;
 
-  // 4. Save. Unguarded until PHX-038 (my fencing token AND a live lease).
-  await saveEvent(
-    { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: "OK", result, error: null, attempts: 1, tokens, fencingToken: ctx.token },
-    ctx.db,
-  );
+  // 4. Save. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
+  //    duplicate key means another worker saved this step first: we lost, so drop the task
+  //    (design rule 5), exactly as a rejected guarded write will.
+  try {
+    await saveEvent(
+      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: "OK", result, error: null, attempts: 1, tokens, fencingToken: ctx.token },
+      ctx.db,
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code !== "23505") throw err;
+    throw new Fenced(`task ${ctx.taskId} step ${stepId}: another worker already saved it`, { cause: err });
+  }
   return { ok: true, value: result };
 }
 
