@@ -485,7 +485,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | Tool | Purpose |
 |---|---|
 | `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Fault knobs (rates 0..1 rolled per call; every call counted on arrival, failed ones too): `FAKE_LLM_LATENCY_MS`, `FAKE_LLM_429_RATE` + `FAKE_LLM_RETRY_AFTER_S`, `FAKE_LLM_5XX_RATE`, `FAKE_LLM_HANG_RATE` (never answers, so the caller times out); changeable at runtime via `GET`/`POST /faults` |
-| `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
+| `fake-email` | `POST /emails` at `http://localhost:${FAKE_EMAIL_PORT:-9002}`, body `{ to, ... }`, header `Idempotency-Key` (required, else 400). First send with a key delivers and returns `{ id }`; same key + same body returns the original `{ id }` and delivers nothing; same key + different body → 409. `GET /stats` → `{ key: { requests, deliveries } }`, `POST /reset`. No fault knobs yet |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
 | `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |

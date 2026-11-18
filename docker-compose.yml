@@ -69,5 +69,12 @@ services:
       FAKE_LLM_HANG_RATE: ${FAKE_LLM_HANG_RATE:-0}
     ports: ["9001:9001"]
 
+  fake-email:
+    <<: *app
+    command: ["node", "dist/testing/fake-email.js"]
+    environment:
+      FAKE_EMAIL_PORT: 9002
+    ports: ["9002:9002"]
+
 volumes:
   pgdata:
