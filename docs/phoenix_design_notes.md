@@ -188,3 +188,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   (2) every ERROR row is a 5-attempt give-up, (3) some OK step has attempts > 1, (4) per
   step, fake LLM calls ≥ saved attempts (≥, not =: the naive claim may run a step twice
   until PHX-036). Rule (3) first counted give-up rows too and missed "attempts always 1".
+- Fake email (PHX-029, 18 Nov 2026): the design said only "honours Idempotency-Key, counts
+  deliveries per key". Decided: `POST /emails` with an `Idempotency-Key` header. A repeat
+  key with the same body replays the original `{ id }` (Stripe / Resend behaviour); a
+  repeat key with a different body is a 409, so two steps sharing one key (breaking D4)
+  fail loudly instead of silently dropping an email. No key → 400: our dispatcher always
+  sends one. No fault knobs until a ticket needs them (dispatcher retries are unit-tested
+  with a stub). Chaos 4 checks every outbox key has one delivery and no extra keys exist.
