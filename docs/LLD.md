@@ -215,6 +215,7 @@ inputHash = sha256(canonicalJson({ type, args }))
 4. save, guarded (§5.4 / §5.5):
      normal step:      INSERT events
      side-effect step: INSERT events + INSERT outbox, ONE transaction
+                       (caller passes step(..., { outbox: value => row }); an ERROR outcome queues nothing)
    if 0 rows affected: throw Fenced
 
 5. return result
