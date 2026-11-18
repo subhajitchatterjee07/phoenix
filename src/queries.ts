@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type pg from "pg";
 import { config } from "./config.js";
 import { pool, withTransaction } from "./db.js";
+import { failpoint } from "./failpoint.js";
 
 // Every SQL statement of LLD §5, one function each. Added ticket by ticket.
 
@@ -25,10 +27,16 @@ export async function loadEvent(taskId: number, stepId: number, db: pg.Pool = po
   return rows[0] ?? null;
 }
 
-export type NewEvent = SavedEvent & { taskId: number; stepId: number; fencingToken: number };
+/** A side effect for the dispatcher to perform (LLD §2 outbox). Saved only with an OK event. */
+export type OutboxRow = { kind: "email"; guarantee: "AT_LEAST_ONCE" | "AT_MOST_ONCE"; recipient: string; payload: unknown };
+export type NewEvent = SavedEvent & { taskId: number; stepId: number; fencingToken: number; outbox?: OutboxRow };
+
+/** Same on every retry of one step, different across steps (HLD D4): the provider dedupes on it. */
+export const idemKey = (taskId: number, stepId: number) => createHash("sha256").update(`${taskId}:${stepId}`).digest("hex");
 
 /**
- * Saves a finished step and adds its tokens to the task, in ONE transaction (LLD §5.4).
+ * Saves a finished step, adds its tokens to the task and, for a side-effect step, writes its
+ * outbox row, all in ONE transaction (LLD §5.4, §5.5): a crash leaves all of them or none.
  * UNGUARDED for now: no "my fencing token AND live lease" check until PHX-038 (phase 5).
  */
 export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> {
@@ -55,5 +63,14 @@ export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [e.taskId, e.stepId, e.stepType, e.inputHash, e.status, json, e.error, e.attempts, e.tokens, e.fencingToken],
     );
+    if (!e.outbox) return;
+    failpoint("between_event_and_outbox"); // Chaos 4: the events row must roll back too
+    const { kind, guarantee, recipient, payload } = e.outbox;
+    await client.query(
+      `INSERT INTO outbox (idem_key, task_id, step_id, kind, guarantee, recipient, payload)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [idemKey(e.taskId, e.stepId), e.taskId, e.stepId, kind, guarantee, recipient, JSON.stringify(payload)],
+    );
   }, db);
+  if (e.outbox) failpoint("after_outbox_commit"); // Chaos 4: saved and queued, step() never returned
 }
