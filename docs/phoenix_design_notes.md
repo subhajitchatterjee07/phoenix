@@ -181,3 +181,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   replay returns it without calling `fn`. The workflow (approved) CONTINUES without a failed
   source: the report is told "Source N: not available (reason)". The task fails only if
   every summary failed or the report step itself failed (nothing to deliver).
+- Chaos 3 pass rule (PHX-028, 18 Nov 2026): 20 tasks, fake LLM 429 on 30% of calls, no
+  Retry-After (backoff path). Five 429s in a row (0.3^5 = 0.24% of calls) is an honest
+  give-up, so "every task DONE" would flake about 1 run in 20. Approved rule: (1) no task
+  stuck; each is DONE or FAILED only with "gave up after 5 attempts" (report step gave up),
+  (2) every ERROR row is a 5-attempt give-up, (3) some OK step has attempts > 1, (4) per
+  step, fake LLM calls ≥ saved attempts (≥, not =: the naive claim may run a step twice
+  until PHX-036). Rule (3) first counted give-up rows too and missed "attempts always 1".
