@@ -24,7 +24,8 @@
     "seed": "tsx --env-file=.env testing/seed.ts",
     "chaos:p1": "bash testing/chaos/p1-baseline.sh",
     "chaos:kill": "bash testing/chaos/kill-loop.sh",
-    "chaos:p2": "bash testing/chaos/kill-loop.sh 20 200"
+    "chaos:p2": "bash testing/chaos/kill-loop.sh 20 200",
+    "chaos:p3": "bash testing/chaos/p3-ratelimit.sh"
   },
   "repository": {
     "type": "git",
