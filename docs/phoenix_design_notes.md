@@ -195,3 +195,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   fail loudly instead of silently dropping an email. No key → 400: our dispatcher always
   sends one. No fault knobs until a ticket needs them (dispatcher retries are unit-tested
   with a stub). Chaos 4 checks every outbox key has one delivery and no extra keys exist.
+- Failpoints (PHX-030, 18 Nov 2026): not in the HLD or LLD, only on the board. Decided:
+  `failpoint(name)` SIGKILLs its own process when `CRASH_AT` equals `name`: a true kill -9,
+  so no finally or exit handler can tidy up the half-done work we want to test. The names
+  are a closed list in config, so a typo fails at boot instead of never firing (a failpoint
+  that never fires makes a chaos test pass for nothing). The code stays stateless: the
+  chaos script makes a crash happen once by restarting without `CRASH_AT`. The mechanism
+  ships now; the points are placed by PHX-031 (outbox) and PHX-032 (dispatcher).
