@@ -202,3 +202,12 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   that never fires makes a chaos test pass for nothing). The code stays stateless: the
   chaos script makes a crash happen once by restarting without `CRASH_AT`. The mechanism
   ships now; the points are placed by PHX-031 (outbox) and PHX-032 (dispatcher).
+- Side-effect steps (PHX-031, 18 Nov 2026). LLD §5.5 fixed the transaction; the call shape
+  was open because the registry and planner (§6) aren't built. Decided: (1) one `step()`
+  with an optional outbox builder, `step(ctx, type, args, fn, { outbox: (value) => row })`;
+  `saveEvent` inserts the outbox row in the same transaction; an ERROR outcome writes no
+  outbox row. (2) Until the planner exists, task input may carry `email: { to, guarantee }`,
+  and the workflow then adds a final `send_email` step whose brief is the report. (3) The
+  LLM writes the body; the subject is the task goal. Failpoints `between_event_and_outbox`
+  (inside the transaction) and `after_outbox_commit` live in `saveEvent`. 031a = save,
+  031b = step() + workflow.
