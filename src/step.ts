@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { config } from "./config.js";
-import { loadEvent, saveEvent } from "./queries.js";
+import { loadEvent, saveEvent, type OutboxRow } from "./queries.js";
 
 /**
  * JSON text that is identical for equal values: object keys sorted at every level,
@@ -132,12 +132,15 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type StepOutput<T> = { value: T; tokens?: number };
 /** What a step function is told: its id (e.g. for the X-Phoenix-Step header) and the abort signal. */
 export type StepMeta = { stepId: number; signal: AbortSignal };
+/** A side-effect step names the outbox row its value produces; saved in the events transaction (§5.5). */
+export type StepOptions<T> = { outbox?: (value: T) => OutboxRow };
 
 export async function step<A, T>(
   ctx: StepContext,
   type: string,
   args: A,
   fn: (args: A, meta: StepMeta) => Promise<StepOutput<T>>,
+  options: StepOptions<T> = {},
 ): Promise<StepResult<T>> {
   const stepId = ctx.nextStepId++; // assigned in call order, so replay sees the same ids
   const hash = inputHash(type, args);
@@ -175,12 +178,13 @@ export async function step<A, T>(
     attempts = err.attempts;
   }
 
-  // 4. Save. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
+  // 4. Save, with the outbox row if this step has a side effect and succeeded. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
   //    duplicate key means another worker saved this step first: we lost, so drop the task
   //    (design rule 5), exactly as a rejected guarded write will.
   try {
     await saveEvent(
-      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: outcome.ok ? "OK" : "ERROR", result: outcome.ok ? outcome.value : undefined, error: outcome.ok ? null : outcome.error, attempts, tokens, fencingToken: ctx.token },
+      { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: outcome.ok ? "OK" : "ERROR", result: outcome.ok ? outcome.value : undefined, error: outcome.ok ? null : outcome.error, attempts, tokens, fencingToken: ctx.token,
+        outbox: outcome.ok && options.outbox ? options.outbox(outcome.value) : undefined },
       ctx.db,
     );
   } catch (err) {

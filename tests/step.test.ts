@@ -112,3 +112,11 @@ it("a permanent failure after a retry records both attempts (503, then 404)", as
   expect(await loadEvent(taskId, 42, db)).toMatchObject({ status: "ERROR", attempts: 2 });
   vi.restoreAllMocks();
 });
+
+it("a side-effect step queues its outbox row with the event; a failed one queues nothing", async () => {
+  const outbox = (body: string) => ({ kind: "email", guarantee: "AT_LEAST_ONCE", recipient: "a@example.com", payload: { body } }) as const;
+  await step({ ...ctx(), nextStepId: 50 }, "e", {}, async () => ({ value: "hi" }), { outbox });
+  await step({ ...ctx(), nextStepId: 51 }, "e", {}, async () => { throw new PermanentError("no"); }, { outbox });
+  const { rows } = await db.query("SELECT step_id, payload FROM outbox WHERE task_id = $1 ORDER BY step_id", [taskId]);
+  expect(rows).toEqual([{ step_id: 50, payload: { body: "hi" } }]);
+});

@@ -32,6 +32,7 @@ beforeEach(async () => {
 it("summarises 3 sources, writes a report: one LLM call per step 1..4", async () => {
   expect(await runTask(ctx(), t, llm)).toMatch(/^fake answer /);
   expect(await stats()).toEqual(perStep([1, 1, 1, 1]));
+  expect((await db.query("SELECT count(*)::int AS n FROM outbox WHERE task_id = $1", [t.taskId])).rows[0].n).toBe(0); // no email asked
 });
 
 it("FIXED (phase 1 BASELINE PROBLEM): a re-run after a crash pays for nothing, same report", async () => {
@@ -61,4 +62,16 @@ it("a source that fails for good is reported as missing; the task still produces
 
 it("fails the task when no source could be summarised", async () => {
   await expect(runTask(ctx(), t, failingOn("text A", "text B", "text C"))).rejects.toThrow(/no source could be summarised/);
+});
+
+it("with input.email, step 5 writes the email and queues ONE outbox row; a re-run queues nothing new", async () => {
+  const input = { ...task.input, email: { to: "boss@example.com", guarantee: "AT_LEAST_ONCE" } };
+  t = { ...task, input, taskId: await seedTask(db, task.goal, input) };
+  const report = await runTask(ctx(), t, llm);
+  expect(await runTask(ctx(), t, llm)).toBe(report); // the restart replays all 5 steps
+  expect(await stats()).toEqual(perStep([1, 1, 1, 1, 1]));
+  const { rows: [body] } = await db.query("SELECT result_inline FROM events WHERE task_id = $1 AND step_id = 5", [t.taskId]);
+  const { rows } = await db.query("SELECT step_id, recipient, guarantee, payload, status FROM outbox WHERE task_id = $1", [t.taskId]);
+  expect(rows).toEqual([{ step_id: 5, recipient: "boss@example.com", guarantee: "AT_LEAST_ONCE",
+    payload: { subject: task.goal, body: body.result_inline }, status: "PENDING" }]);
 });
