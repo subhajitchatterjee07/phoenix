@@ -2,7 +2,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { loadEvent, saveEvent } from "../src/queries.js";
 import { Fenced, inputHash, NonDeterminism, PermanentError, step, TransientError, type StepContext } from "../src/step.js";
-import { seedTask } from "../testing/seed.js";
+import { seedRunningTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
 let db: pg.Pool;
@@ -13,7 +13,7 @@ const saved = { inputHash: inputHash("t", {}), attempts: 1, tokens: 5, fencingTo
 
 beforeAll(async () => {
   ({ pool: db, drop } = await createTestDb("step"));
-  taskId = await seedTask(db, "goal");
+  taskId = await seedRunningTask(db, "goal");
   await saveEvent({ ...saved, taskId, stepId: 1, stepType: "t", status: "OK", result: { summary: "s" }, error: null }, db);
   await saveEvent({ ...saved, taskId, stepId: 2, stepType: "t", status: "ERROR", result: undefined, error: "404" }, db);
 });
@@ -119,4 +119,12 @@ it("a side-effect step queues its outbox row with the event; a failed one queues
   await step({ ...ctx(), nextStepId: 51 }, "e", {}, async () => { throw new PermanentError("no"); }, { outbox });
   const { rows } = await db.query("SELECT step_id, payload FROM outbox WHERE task_id = $1 ORDER BY step_id", [taskId]);
   expect(rows).toEqual([{ step_id: 50, payload: { body: "hi" } }]);
+});
+
+it("a stale worker (its token was bumped by a takeover) runs the step but saves nothing: Fenced", async () => {
+  const stale = await seedRunningTask(db, "taken over");
+  await db.query("UPDATE tasks SET fencing_token = 1 WHERE task_id = $1", [stale]); // the new owner's claim
+  const run = step({ ...ctx(), taskId: stale }, "t", {}, async () => ({ value: "paid for, then thrown away" }));
+  await expect(run).rejects.toThrow(Fenced);
+  expect(await loadEvent(stale, 1, db)).toBeNull();
 });

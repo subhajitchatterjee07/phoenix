@@ -359,6 +359,13 @@ WHERE EXISTS (SELECT 1 FROM tasks
 ```
 Same transaction: `UPDATE tasks SET tokens_used = tokens_used + $tokens WHERE ... (guarded)`.
 
+As built (PHX-038, D-32): the guarded `tokens_used` UPDATE runs **first** in `saveEvent`'s
+transaction and is the guard for the whole save. It checks `fencing_token = $tok AND
+lease_expires_at > now() AND status = 'RUNNING'`; on 0 rows → ROLLBACK, `saveEvent` returns
+false, `step()` throws `Fenced`. The UPDATE row-locks the task until COMMIT, so a concurrent
+claim (which must UPDATE the same row) waits, and the token can't change between the guard and
+the events/outbox inserts. That is why the check sits in a write that locks, not in a read before it.
+
 ### 5.5 Guarded save (side-effect step): one transaction
 ```
 BEGIN

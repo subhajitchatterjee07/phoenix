@@ -183,11 +183,12 @@ export async function step<A, T>(
     attempts = err.attempts;
   }
 
-  // 4. Save, with the outbox row if this step has a side effect and succeeded. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
-  //    duplicate key means another worker saved this step first: we lost, so drop the task
-  //    (design rule 5), exactly as a rejected guarded write will.
+  // 4. Save, guarded (§5.4), with the outbox row if this step has a side effect and succeeded.
+  //    The task is no longer mine (stale token, lease gone): nothing was written, so drop the
+  //    task (design rule 5). A duplicate key is the same verdict: someone saved this step first.
+  let written: boolean;
   try {
-    await saveEvent(
+    written = await saveEvent(
       { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: outcome.ok ? "OK" : "ERROR", result: outcome.ok ? outcome.value : undefined, error: outcome.ok ? null : outcome.error, attempts, tokens, fencingToken: ctx.token,
         outbox: outcome.ok && options.outbox ? options.outbox(outcome.value) : undefined },
       ctx.db,
@@ -196,6 +197,7 @@ export async function step<A, T>(
     if ((err as { code?: string }).code !== "23505") throw err;
     throw new Fenced(`task ${ctx.taskId} step ${stepId}: another worker already saved it`, { cause: err });
   }
+  if (!written) throw new Fenced(`task ${ctx.taskId} step ${stepId}: not mine any more (token ${ctx.token}), nothing saved`);
   return outcome;
 }
 
