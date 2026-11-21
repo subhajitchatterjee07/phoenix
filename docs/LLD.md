@@ -326,9 +326,13 @@ WHERE task_id = (
   LIMIT 1
   FOR UPDATE SKIP LOCKED
 )
-RETURNING task_id, fencing_token, goal, max_steps;
+RETURNING task_id, fencing_token, goal, input, max_steps;
 ```
 Note `lease_expires_at IS NULL`: PENDING tasks have no lease, and `NULL < now()` is not true.
+Implemented as `claim(me)` in `queries.ts` (PHX-036): the interval is `LEASE_SECONDS`, and
+`input` is returned too (the workflow needs it). Without `SKIP LOCKED` a claimer waits for
+the in-flight claim to commit, then moves on: correct but serialized. Without `FOR UPDATE`
+at all, two claimers can both win the same task.
 
 ### 5.3 Renew
 ```sql

@@ -74,3 +74,30 @@ export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> 
   }, db);
   if (e.outbox) failpoint("after_outbox_commit"); // Chaos 4: saved and queued, step() never returned
 }
+
+export type ClaimedTask = { taskId: number; token: number; goal: string; input: unknown; maxSteps: number };
+
+/**
+ * LLD §5.2: atomically take the oldest claimable task: PENDING, or RUNNING with an expired
+ * lease (a takeover). One statement, so two workers can never both win: SKIP LOCKED makes a
+ * concurrent claimer pass over the row being claimed and take the next one. Each claim bumps
+ * the fencing token, so the previous owner's writes can be rejected (PHX-038).
+ */
+export async function claim(me: string, db: Pick<pg.Pool, "query"> = pool): Promise<ClaimedTask | null> {
+  const { rows } = await db.query<ClaimedTask>(
+    `UPDATE tasks
+     SET owner = $1, status = 'RUNNING', fencing_token = fencing_token + 1,
+         lease_expires_at = now() + $2 * interval '1 second', updated_at = now()
+     WHERE task_id = (
+       SELECT task_id FROM tasks
+       WHERE status IN ('PENDING', 'RUNNING') -- an allowlist (design rule 8)
+         AND (lease_expires_at IS NULL OR lease_expires_at < now()) -- NULL < now() is not true
+       ORDER BY created_at
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING task_id AS "taskId", fencing_token AS token, goal, input, max_steps AS "maxSteps"`,
+    [me, config.LEASE_SECONDS],
+  );
+  return rows[0] ?? null;
+}
