@@ -255,3 +255,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
      the provider-side spend limit on the API key is the outer guard.
   Scope: LLM only; the dispatcher keeps per-row backoff (PHX-033). New tickets: PHX-066
   (table + shared wait), PHX-067 (429s don't count, bounded wait).
+- Heartbeat (PHX-037, 22 Nov 2026). The LLD covered "renew returns 0 rows → abort" but not
+  a renew that throws. Decided: one failure isn't proof we lost the task (the 30 s lease
+  tolerates 2 missed beats), so log it and retry next beat. But after a full lease with no
+  successful renew, abort: another worker may own the task, and we'd keep paying for LLM
+  calls whose saves will be rejected. The timer is a chained `setTimeout` instead of the
+  sketch's `setInterval`, so a slow renew never overlaps the next. `stop()` also has to
+  handle a renew that is in flight when it's called (a flag, not just `clearTimeout`).
