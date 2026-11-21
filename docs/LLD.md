@@ -302,7 +302,7 @@ while (true) {
   task = await claim()                                   // 5.2
   if (!task) { await sleep(5000 ± 1000); continue }
   controller = new AbortController()
-  hb = setInterval(renew → on 0 rows: controller.abort(), 10_000)   // 5.3
+  stop = startHeartbeat(task, controller)   // 5.3: renew every 10 s; abort on 0 rows or a full lease without a renew
   try   { await runTask(ctx); await markDone() }         // 5.6
   catch (e) {
     if (e instanceof Suspend) {}                         // already paused
@@ -340,6 +340,12 @@ UPDATE tasks SET lease_expires_at = now() + interval '30 seconds'
 WHERE task_id = $id AND fencing_token = $tok AND status = 'RUNNING';
 -- 0 rows → I no longer own it → abort
 ```
+Heartbeat (`startHeartbeat` in `heartbeat.ts`, PHX-037): every `HEARTBEAT_MS`, each renew
+scheduled only after the previous one finished (chained `setTimeout`, never two in flight).
+- 0 rows: abort with `Fenced`, at once.
+- The renew throws (database unreachable, blip): log it and try again next beat. A full
+  `LEASE_SECONDS` without one successful renew (our clock): abort, since another worker may
+  own the task by now and our steps' saves would be rejected (PHX-038) anyway (D-31).
 
 ### 5.4 Guarded save (normal step)
 ```sql
