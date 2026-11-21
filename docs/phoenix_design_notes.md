@@ -220,3 +220,11 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   bounded by the new `EMAIL_TIMEOUT_MS` (10 s). The new `EMAIL_BASE_URL` defaults to the
   fake, like `LLM_BASE_URL`. A timeout or network error is transient: we can't know if
   the email was delivered, and a resend with the key is safe. 032a = client, 032b = loop.
+- Dispatcher retries (PHX-033, 22 Nov 2026). LLD §7 named `backoff(attempts)` without
+  defining it. Decided: reuse the step formula and config (`backoffMs()` moved out of
+  `runWithRetries` and shared): full jitter, 1 s base, 30 s cap, Retry-After capped, so 8
+  attempts span about 2 minutes. An unclassified error counts as transient (a glitch
+  shouldn't lose an email; a real bug still ends FAILED after 8). The failed row backs off,
+  so the rows behind it are sent meanwhile (fixes B-29). AT_MOST_ONCE (033b): mark SENT and
+  COMMIT before the send, never retry; if the send throws, set FAILED + last_error so an
+  operator sees it may not have arrived.

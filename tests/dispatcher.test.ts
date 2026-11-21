@@ -4,6 +4,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { dispatchOnce } from "../src/dispatcher.js";
 import { saveEvent } from "../src/queries.js";
+import { PermanentError, TransientError } from "../src/step.js";
 import { createEmail } from "../src/tools/email.js";
 import { buildFakeEmail } from "../testing/fake-email.js";
 import { seedTask } from "../testing/seed.js";
@@ -42,10 +43,37 @@ it("an outbox row → one delivery with its idem_key → SENT; then nothing is d
   expect(await dispatchOnce(db, email)).toBeNull();
 });
 
-it("a failed send rolls back: the row stays PENDING, untouched", async () => {
+const failWith = (err: Error) => ({ send: () => Promise.reject(err) });
+const failure = async () =>
+  (await db.query(`SELECT status, attempts, last_error, extract(epoch FROM next_attempt_at - now())::float AS wait_s FROM outbox ORDER BY step_id LIMIT 1`)).rows[0];
+
+it.each([
+  ["a transient error", new TransientError("HTTP 503"), 0, 1], // attempt 1: full jitter in [0, 1 s)
+  ["an unclassified error (D-29)", new Error("socket hang up"), 0, 1],
+  ["a 429 with Retry-After 60 s (capped at 30 s)", new TransientError("HTTP 429", 60_000), 29, 30],
+])("%s counts an attempt, keeps the error, backs off; the row behind it is sent meanwhile", async (_, err, minS, maxS) => {
   await queueEmail();
-  await expect(dispatchOnce(db, { send: () => Promise.reject(new Error("provider down")) })).rejects.toThrow("provider down");
-  expect(await outbox()).toEqual([{ step_id: nextStep - 1, status: "PENDING", attempts: 0, sent: false }]);
+  await queueEmail();
+  await dispatchOnce(db, failWith(err));
+  const row = await failure();
+  expect(row).toMatchObject({ status: "PENDING", attempts: 1, last_error: String(err) });
+  expect(row.wait_s).toBeGreaterThanOrEqual(minS);
+  expect(row.wait_s).toBeLessThanOrEqual(maxS);
+  await dispatchOnce(db, email); // the failed row is not due: the next one goes (B-29 fixed)
+  expect((await outbox()).map((r) => r.status)).toEqual(["PENDING", "SENT"]);
+});
+
+it("a permanent error ends the row FAILED at once", async () => {
+  await queueEmail();
+  await dispatchOnce(db, failWith(new PermanentError("HTTP 422 bad address")));
+  expect(await failure()).toMatchObject({ status: "FAILED", attempts: 1, last_error: "PermanentError: HTTP 422 bad address" });
+});
+
+it("the 8th failed attempt (OUTBOX_MAX_ATTEMPTS) ends the row FAILED", async () => {
+  await queueEmail();
+  await db.query("UPDATE outbox SET attempts = 7");
+  await dispatchOnce(db, failWith(new TransientError("HTTP 503")));
+  expect(await failure()).toMatchObject({ status: "FAILED", attempts: 8 });
 });
 
 it("the lock is held during the send: a second dispatcher skips that row and takes the next", async () => {
