@@ -29,7 +29,7 @@ export async function loadEvent(taskId: number, stepId: number, db: pg.Pool = po
 
 /** A side effect for the dispatcher to perform (LLD §2 outbox). Saved only with an OK event. */
 export type OutboxRow = { kind: "email"; guarantee: "AT_LEAST_ONCE" | "AT_MOST_ONCE"; recipient: string; payload: unknown };
-export type NewEvent = SavedEvent & { taskId: number; stepId: number; fencingToken: number; outbox?: OutboxRow };
+export type NewEvent = SavedEvent & { taskId: number; stepId: number; fencingToken: number; outbox?: OutboxRow | undefined };
 
 /** Same on every retry of one step, different across steps (HLD D4): the provider dedupes on it. */
 export const idemKey = (taskId: number, stepId: number) => createHash("sha256").update(`${taskId}:${stepId}`).digest("hex");

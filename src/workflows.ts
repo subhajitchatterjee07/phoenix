@@ -6,7 +6,11 @@ export type Task = { taskId: number; goal: string; input: unknown };
 type Llm = { chat(messages: ChatMessage[], call: LlmCall): Promise<LlmReply> };
 
 // Phase 1: "fetch" reads the texts from the task's input. Real web fetch is phase 7.
-const Input = z.object({ sources: z.array(z.string().min(1)).min(1) });
+// `email` stands in for a planned send_email step until the planner exists (D-27).
+const Input = z.object({
+  sources: z.array(z.string().min(1)).min(1),
+  email: z.object({ to: z.email(), guarantee: z.enum(["AT_LEAST_ONCE", "AT_MOST_ONCE"]) }).optional(),
+});
 
 /**
  * Every LLM call is a step(): its result is saved in `events`, so after a crash the next
@@ -17,7 +21,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
   const call = (stepId: number, signal: AbortSignal) => ({ taskId: task.taskId, stepId, signal });
 
   // Fetch: deterministic (reads the task row), so not a step
-  const { sources } = Input.parse(task.input);
+  const { sources, email } = Input.parse(task.input);
 
   // Steps 1..N: summarise each source
   const summaries: string[] = [];
@@ -51,6 +55,22 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
     );
     return { value: reply.content, tokens: reply.tokens };
   });
+  if (!email) return valueOf(report);
+
+  // Step N+2: the LLM writes the email; the outbox row is saved with the event, and the
+  // dispatcher sends it. A replay finds the event and queues nothing new.
+  const args = { to: email.to, brief: valueOf(report), guarantee: email.guarantee };
+  const sent = await step(ctx, "send_email", args, async (a, meta) => {
+    const reply = await llm.chat(
+      [
+        { role: "system", content: "Write a short email that delivers this brief." },
+        { role: "user", content: a.brief },
+      ],
+      call(meta.stepId, meta.signal),
+    );
+    return { value: reply.content, tokens: reply.tokens };
+  }, { outbox: (body) => ({ kind: "email", guarantee: args.guarantee, recipient: args.to, payload: { subject: task.goal, body } }) });
+  valueOf(sent); // an email that could not be written is a deliverable that failed
   return valueOf(report);
 }
 
