@@ -182,9 +182,13 @@ interface StepContext {
   nextStepId: number;         // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal;        // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  db?: pg.Pool;               // tests only: a throwaway database; defaults to the process pool
 }
 
 type StepResult<T> = { ok: true; value: T } | { ok: false; error: string };  // recorded errors are values
+type StepOutput<T> = { value: T; tokens?: number };  // what fn returns; tokens feed events.tokens + the budget
+type StepMeta = { stepId: number; signal: AbortSignal };  // told to fn: header tag + abort
+// step<A, T>(ctx, type, args: A, fn: (args: A, meta: StepMeta) => Promise<StepOutput<T>>): Promise<StepResult<T>>
 
 class Suspend extends Error {}        // task paused (approval): stop executing
 class Fenced extends Error {}         // my write was rejected: drop the task
@@ -211,6 +215,7 @@ inputHash = sha256(canonicalJson({ type, args }))
 4. save, guarded (§5.4 / §5.5):
      normal step:      INSERT events
      side-effect step: INSERT events + INSERT outbox, ONE transaction
+                       (caller passes step(..., { outbox: value => row }); an ERROR outcome queues nothing)
    if 0 rows affected: throw Fenced
 
 5. return result
@@ -224,10 +229,17 @@ inputHash = sha256(canonicalJson({ type, args }))
 | HTTP 5xx | transient | retry |
 | HTTP 400/401/403/404/422, MCP tool error result | permanent | record ERROR, continue task |
 | transient still failing after max attempts | permanent | record ERROR, continue task |
+| HTTP 408 | transient | retry |
+| our own `signal` aborted (lease lost) | `Fenced` | never retry; drop the task (rule 5) |
 
 Backoff: `delay = Math.random() * Math.min(cap, base * 2 ** attempt)`, base 1 s, cap 30 s,
 max 5 attempts. `Math.random()` here only affects timing, not results or branches, so it's safe.
+`Retry-After` replaces the backoff for that wait but is capped at `BACKOFF_CAP_MS` (30 s), so one
+step never stalls a task for long; a wait is cut short by an aborted signal (→ `Fenced`).
+`step()` saves the attempt count in `events.attempts`.
 Pass `ctx.signal` to `fetch` and to the LLM/MCP clients so a fenced worker stops waiting.
+Classification happens at each tool's boundary: `classifyHttp(status, message, retryAfter)` in
+`step.ts` (seconds or HTTP-date `Retry-After`); `tools/llm.ts` maps the `openai` client's errors.
 
 ### 4.4 Event loop rule (TypeScript-specific)
 The heartbeat is a `setInterval` on the **same event loop** as the steps. Synchronous
@@ -238,7 +250,8 @@ to `worker_threads` or to the Python tools server.
 
 ### 4.5 Determinism rules for workflow code
 - No `Date.now()`, `new Date()`, `Math.random()`, `crypto.randomUUID()`, `fetch`, file I/O or
-  MCP calls outside a step. Use `ctx.now()` / `ctx.random()` (tiny built-in steps).
+  MCP calls outside a step. Use `await now(ctx)` / `await random(ctx)` from `step.ts` (tiny
+  built-in steps). ESLint enforces the ban in `src/workflows.ts` (file I/O and MCP: review).
 - `Promise.all` over steps is not allowed in v1 (step ids must be assigned in a fixed order).
 - Don't iterate over unordered data to decide which steps to run (sort first).
 - Don't change the order of steps for tasks already in flight (L5).
@@ -424,8 +437,11 @@ while (true) {
   }
 }
 ```
-- AT_MOST_ONCE rows: mark SENT before calling the provider and never retry
-  (only for providers without idempotency keys).
+- `backoff(attempts)` = `backoffMs()` in `step.ts`, the step-retry formula and config (§4.3):
+  full jitter, base 1 s, cap 30 s, a 429's `Retry-After` wins but is capped. An error that is
+  neither transient nor permanent counts as transient (still FAILED after 8).
+- AT_MOST_ONCE rows (only for providers without idempotency keys): mark SENT and COMMIT
+  before calling the provider, never retry; if the send throws, set FAILED + `last_error`.
 - The dispatcher never reads or writes `tasks`.
 
 ---
@@ -462,9 +478,11 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `DEFAULT_MAX_STEPS` | 200 |
 | `INLINE_RESULT_MAX_BYTES` | 65536 |
 | `LLM_TIMEOUT_MS` | 60000 |
+| `EMAIL_BASE_URL` / `EMAIL_TIMEOUT_MS` | the fake: `http://localhost:9002` (compose: `http://fake-email:9002`) / 10000. `POST {base}/emails`, body `{ to, subject, body }`, header `Idempotency-Key`. The timeout also bounds how long the dispatcher holds an outbox row lock |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | the fake: `http://localhost:9001/v1` / `fake` / `fake` (compose: `http://fake-llm:9001/v1`). Real: `https://openrouter.ai/api/v1` / your key / e.g. `deepseek/deepseek-chat` |
 | `MCP_TOOLS_URL` | `http://phoenix-tools:8100/mcp` |
 | `MCP_ALLOWLIST` | `{ "phoenix-tools": ["calculate","analyze_table","describe_stats","query_analytics"] }` |
+| `CRASH_AT` | unset. Chaos tests only: one of `between_event_and_outbox`, `after_outbox_commit`, `after_send_before_sent` (an unknown name fails at boot) |
 
 ---
 
@@ -472,12 +490,14 @@ Every value is an environment variable of the same name, validated at boot by `s
 
 | Tool | Purpose |
 |---|---|
-| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Later: configurable 429 rate, latency, timeouts, `Retry-After` (PHX-024) |
-| `fake-email` | Honours `Idempotency-Key`; counts deliveries per key |
+| `fake-llm` | OpenRouter drop-in at `http://localhost:${FAKE_LLM_PORT:-9001}/v1`; deterministic answers; counts calls per (task, step) from the `X-Phoenix-Task` / `X-Phoenix-Step` headers; `GET /stats`, `POST /reset`. Fault knobs (rates 0..1 rolled per call; every call counted on arrival, failed ones too): `FAKE_LLM_LATENCY_MS`, `FAKE_LLM_429_RATE` + `FAKE_LLM_RETRY_AFTER_S`, `FAKE_LLM_5XX_RATE`, `FAKE_LLM_HANG_RATE` (never answers, so the caller times out); changeable at runtime via `GET`/`POST /faults` |
+| `fake-email` | `POST /emails` at `http://localhost:${FAKE_EMAIL_PORT:-9002}`, body `{ to, ... }`, header `Idempotency-Key` (required, else 400). First send with a key delivers and returns `{ id }`; same key + same body returns the original `{ id }` and delivers nothing; same key + different body → 409. `GET /stats` → `{ key: { requests, deliveries } }`, `POST /reset`. No fault knobs yet |
+| `failpoint(name)` (`src/failpoint.ts`) | If `CRASH_AT` equals `name`, the process SIGKILLs itself there (a real `kill -9`: no finally, no exit handlers). Points: `between_event_and_outbox`, `after_outbox_commit` (PHX-031), `after_send_before_sent` (PHX-032). The chaos script makes it fire once: start with `CRASH_AT`, wait for exit 137, restart without it |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
+| `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
 | `chaos/block-loop` | A test step that blocks the event loop for 40 s (reproduces §4.4) |
-| Assertions | LLM/MCP calls per saved step = 1; deliveries per key = 1; takeover ≤ 35 s; task reaches DONE |
+| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Chaos 3 (`chaos/p3-ratelimit.sh`, 30% 429s): no task stuck; DONE, or FAILED only by a 5-attempt give-up; every ERROR row is such a give-up; some OK step has attempts > 1; per step, LLM calls ≥ saved attempts. Chaos 4 (`chaos/p4-outbox.sh`): crash at each failpoint (worker: `between_event_and_outbox` leaves no rows, `after_outbox_commit` leaves event + 1 outbox row; dispatcher: `after_send_before_sent`); then all tasks DONE, one outbox row per task, all SENT, provider keys = outbox keys, each delivered once, ≥ 1 resent and deduped. Takeover ≤ 35 s (phase 5) |
 
 ---
 

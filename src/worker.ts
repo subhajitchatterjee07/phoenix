@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import type pg from "pg";
 import { config } from "./config.js";
 import { pool } from "./db.js";
+import { Fenced, type StepContext } from "./step.js";
 import { runTask, type Task } from "./workflows.js";
 
 const WORKER_ID = hostname();
@@ -16,9 +17,10 @@ const setStatus = (db: Db, sql: string, params: unknown[]) =>
  * Runs at most one PENDING task; returns its id, or null if there was none.
  * Fixed later: atomic claim + lease (PHX-036..040), retries (PHX-026).
  */
-export async function workOnce(db: Db, run: (task: Task) => ReturnType<typeof runTask> = runTask) {
-  const { rows } = await db.query<Task>(
-    `SELECT task_id AS "taskId", goal, input FROM tasks WHERE status = 'PENDING' ORDER BY created_at LIMIT 1`,
+export async function workOnce(db: Db, run: (ctx: StepContext, task: Task) => Promise<string> = runTask) {
+  const { rows } = await db.query<Task & { token: number; maxSteps: number }>(
+    `SELECT task_id AS "taskId", goal, input, fencing_token AS token, max_steps AS "maxSteps"
+     FROM tasks WHERE status = 'PENDING' ORDER BY created_at LIMIT 1`,
   );
   const task = rows[0];
   if (!task) return null;
@@ -26,10 +28,17 @@ export async function workOnce(db: Db, run: (task: Task) => ReturnType<typeof ru
   // THE GAP: another worker can SELECT this same row before this UPDATE lands.
   await setStatus(db, "status = 'RUNNING', owner = $2", [task.taskId, WORKER_ID]);
   try {
-    const { report, tokens } = await run(task);
-    await setStatus(db, "status = 'DONE', owner = NULL, tokens_used = tokens_used + $2", [task.taskId, tokens]);
+    // No heartbeat yet (PHX-037), so nothing ever aborts this signal.
+    const ctx = { taskId: task.taskId, token: task.token, nextStepId: 1, signal: new AbortController().signal, maxSteps: task.maxSteps };
+    const report = await run(ctx, task);
+    // tokens_used is already added per step by saveEvent; adding it here would count twice.
+    await setStatus(db, "status = 'DONE', owner = NULL", [task.taskId]);
     console.log(`task ${task.taskId} DONE by ${WORKER_ID}: ${report}`);
   } catch (err) {
+    if (err instanceof Fenced) {
+      console.log(`task ${task.taskId} dropped by ${WORKER_ID}: ${err.message}`); // design rule 5
+      return task.taskId;
+    }
     // Phase 1 only: no retries or leases yet, so fail the task instead of leaving it stuck.
     await setStatus(db, "status = 'FAILED', owner = NULL, failure_reason = $2", [task.taskId, String(err)]);
     console.error(`task ${task.taskId} FAILED: ${String(err)}`);

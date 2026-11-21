@@ -16,6 +16,13 @@ export async function createTestDb(name: string): Promise<{ pool: pg.Pool; drop:
   const url = new URL(adminUrl);
   url.pathname = `/${dbName}`;
   const pool = new pg.Pool({ connectionString: url.toString() });
+  // drop() uses DROP DATABASE ... WITH (FORCE), which can kill a pooled connection that is
+  // still closing. pg re-emits that on the pool as error 57P01; with no listener it becomes
+  // an uncaught exception that fails the whole test run (seen in CI on PR #20). Ignore only
+  // that expected error; anything else still crashes.
+  pool.on("error", (err: Error & { code?: string }) => {
+    if (err.code !== "57P01") throw err;
+  });
   const client = await pool.connect();
   await migrate(client).finally(() => client.release());
 

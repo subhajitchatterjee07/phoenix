@@ -26,9 +26,9 @@ id=$(seed 1)
 wait_done "$id" 60
 [ "$(sql "SELECT status FROM tasks WHERE task_id = $id")" = DONE ] || fail "task $id did not end DONE"
 counts=$(stats | node -e 'const s=JSON.parse(require("fs").readFileSync(0));
-  const c=[2,3,4,5].map(n=>s[process.argv[1]+":"+n]??0); if(c.some(x=>x<1)) process.exit(1); console.log(c.join(","))' "$id") \
+  const c=[1,2,3,4].map(n=>s[process.argv[1]+":"+n]??0); if(c.some(x=>x<1)) process.exit(1); console.log(c.join(","))' "$id") \
   || fail "task $id: some LLM step was never called"
-echo "single task $id: DONE, LLM calls per step 2..5 = $counts"
+echo "single task $id: DONE, LLM calls per step 1..4 = $counts"
 
 # Part 2: 50 tasks queued, 3 workers started together (the naive race).
 docker compose stop worker >/dev/null 2>&1

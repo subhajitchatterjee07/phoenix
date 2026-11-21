@@ -123,3 +123,115 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   TEMPORARY DEVIATION from LLD §3.1/§5.1: if the workflow throws, the task is marked
   FAILED with `failure_reason`, because with no leases yet "leave it alone" would mean
   RUNNING forever. Replaced by retries (phase 3) and lease expiry (phase 5).
+- Large step results (PHX-017, 17 Nov 2026): LLD §2 sends results over
+  `INLINE_RESULT_MAX_BYTES` (64 KB) to blob storage via `result_pointer`, but no blob store is
+  designed yet. Until it is, `saveEvent` THROWS a clear error for such results (nothing in
+  phases 2-4 produces them). Parked as PHX-064 on the board, to be designed later.
+  `withTransaction(fn, db = pool)` takes an optional pool so tests can use a throwaway database.
+- step() part 1 (PHX-018, 17 Nov 2026): `StepContext` gains optional `db` (tests only; the
+  worker never sets it), added to LLD §4.1. Until PHX-019, `step()` only replays: a saved
+  row is returned without calling `fn` (OK → value, ERROR → value); a step with no saved
+  row throws "running new steps arrives in PHX-019". Nothing calls `step()` yet.
+- step() part 2 (PHX-019, 17 Nov 2026): `fn` returns `StepOutput<T> = { value, tokens? }`
+  so `step()` can save `events.tokens` (LLM steps pass `reply.tokens`; others omit it).
+  If `fn` throws, nothing is saved and the error is rethrown (retries PHX-026, ERROR rows
+  PHX-027). The first run returns the JSON round-tripped value (via canonicalJson), so it is
+  identical to what replay returns; values JSON would change (Date, undefined) are rejected.
+- Time and randomness (PHX-020, 17 Nov 2026): `now(ctx)` (epoch ms) and `random(ctx)` are
+  plain functions in `step.ts`, not `ctx.now()` methods, so `StepContext` stays plain data.
+  ESLint bans `Date.now()`, `new Date()` (no args), `Math.random()`, `crypto.randomUUID()`
+  and `fetch` in `src/workflows.ts`; file I/O and MCP calls are left to review (rule 1).
+- Porting the workflow (PHX-021, 17 Nov 2026): `fn(args, { stepId, signal })` so LLM steps
+  can tag `X-Phoenix-Step` and pass the abort signal (LLD §4.3). Until the fencing guard
+  (PHX-038), a duplicate key on save (another worker saved the step first) is thrown as
+  `Fenced`, and the worker drops the task without changing its status (design rule 5).
+  The phase 1 "fetch" (reading `input.sources`) is not a step: it is deterministic, so step
+  ids are 1..N = summaries, N+1 = report.
+- Chaos kill loop (PHX-022, 18 Nov 2026): the fake LLM's latency knob
+  (`FAKE_LLM_LATENCY_MS`) is pulled forward from PHX-024 so tasks last long enough for a
+  kill to land mid-task; the call is counted on arrival, so a call cut off by a kill still
+  counts. Until leases (phase 5), the harness SIMULATES LEASE EXPIRY: after each kill it
+  sets the task back to PENDING (test-only; no product code). First run: 20 kills on a
+  201-step task → DONE, 220 LLM calls, 19 steps called exactly twice (the one in flight at
+  each kill), no saved step ever paid again.
+- Chaos 2 pass rules (PHX-023, 18 Nov 2026): the only LLM call allowed to repeat is the step
+  IN FLIGHT at a kill (called, never saved). Steps run one at a time, so each crash wastes at
+  most one call: (1) DONE with all steps saved, (2) every step called ≥ 1, (3) extra calls
+  ≤ kills. A first "at most twice per step" rule was wrong: two kills can land in the same
+  in-flight step (seen: 3 and 4 calls) while total extra calls stayed ≤ kills. Proven to
+  fail on a broken replay (finished steps re-paid): 16 extra calls for 5 kills. Limit: one
+  re-paid finished step could hide inside the allowance if some kills land during boot.
+- Fake LLM faults (PHX-024, 18 Nov 2026): 429 (+ optional Retry-After), 500 and hang rates,
+  set by env or at runtime via `POST /faults` so a chaos run can switch faults on without
+  restarting the fake (which would reset its counters). Failed calls are counted too, so
+  phase 3 can see retries in `/stats`.
+- Error classification (PHX-025, 18 Nov 2026): each tool turns its failures into LLD §4.3
+  types at its boundary, so `step()`'s retries only ask "transient or permanent?".
+  429/408/5xx/timeout/connection → `TransientError` (429 carries `Retry-After`); other 4xx →
+  `PermanentError`; our own aborted signal → `Fenced` (only a lost lease aborts it, so it is
+  never retried). A 404 is permanent for the STEP, not the task. "LLM reply has no content"
+  stays unclassified until real data says whether it is a glitch or a content filter.
+- Retries (PHX-026, 18 Nov 2026): `runWithRetries` in `step.ts`, wired into `step()`.
+  Full-jitter backoff per LLD §4.3; a 429's `Retry-After` replaces backoff but is CAPPED at
+  `BACKOFF_CAP_MS` (30 s), so a provider saying "wait an hour" cannot stall the task: after
+  5 attempts the step fails permanently instead. Only `TransientError` is retried. The wait
+  is abortable (lease lost → `Fenced`). `events.attempts` now holds the real count.
+- Recorded failures (PHX-027, 18 Nov 2026): when retries end in `PermanentError`, `step()`
+  saves an ERROR row (message, real attempt count, no result) and returns `{ ok: false }`;
+  replay returns it without calling `fn`. The workflow (approved) CONTINUES without a failed
+  source: the report is told "Source N: not available (reason)". The task fails only if
+  every summary failed or the report step itself failed (nothing to deliver).
+- Chaos 3 pass rule (PHX-028, 18 Nov 2026): 20 tasks, fake LLM 429 on 30% of calls, no
+  Retry-After (backoff path). Five 429s in a row (0.3^5 = 0.24% of calls) is an honest
+  give-up, so "every task DONE" would flake about 1 run in 20. Approved rule: (1) no task
+  stuck; each is DONE or FAILED only with "gave up after 5 attempts" (report step gave up),
+  (2) every ERROR row is a 5-attempt give-up, (3) some OK step has attempts > 1, (4) per
+  step, fake LLM calls ≥ saved attempts (≥, not =: the naive claim may run a step twice
+  until PHX-036). Rule (3) first counted give-up rows too and missed "attempts always 1".
+- Fake email (PHX-029, 18 Nov 2026): the design said only "honours Idempotency-Key, counts
+  deliveries per key". Decided: `POST /emails` with an `Idempotency-Key` header. A repeat
+  key with the same body replays the original `{ id }` (Stripe / Resend behaviour); a
+  repeat key with a different body is a 409, so two steps sharing one key (breaking D4)
+  fail loudly instead of silently dropping an email. No key → 400: our dispatcher always
+  sends one. No fault knobs until a ticket needs them (dispatcher retries are unit-tested
+  with a stub). Chaos 4 checks every outbox key has one delivery and no extra keys exist.
+- Failpoints (PHX-030, 18 Nov 2026): not in the HLD or LLD, only on the board. Decided:
+  `failpoint(name)` SIGKILLs its own process when `CRASH_AT` equals `name`: a true kill -9,
+  so no finally or exit handler can tidy up the half-done work we want to test. The names
+  are a closed list in config, so a typo fails at boot instead of never firing (a failpoint
+  that never fires makes a chaos test pass for nothing). The code stays stateless: the
+  chaos script makes a crash happen once by restarting without `CRASH_AT`. The mechanism
+  ships now; the points are placed by PHX-031 (outbox) and PHX-032 (dispatcher).
+- Side-effect steps (PHX-031, 18 Nov 2026). LLD §5.5 fixed the transaction; the call shape
+  was open because the registry and planner (§6) aren't built. Decided: (1) one `step()`
+  with an optional outbox builder, `step(ctx, type, args, fn, { outbox: (value) => row })`;
+  `saveEvent` inserts the outbox row in the same transaction; an ERROR outcome writes no
+  outbox row. (2) Until the planner exists, task input may carry `email: { to, guarantee }`,
+  and the workflow then adds a final `send_email` step whose brief is the report. (3) The
+  LLM writes the body; the subject is the task goal. Failpoints `between_event_and_outbox`
+  (inside the transaction) and `after_outbox_commit` live in `saveEvent`. 031a = save,
+  031b = step() + workflow.
+- Dispatcher send (PHX-032, 22 Nov 2026). LLD §7 locked a row "in a transaction" without
+  saying whether the lock is held during the HTTP send. Decided: HOLD it. BEGIN, lock one
+  due row (SKIP LOCKED), send, mark SENT, COMMIT. A second dispatcher skips the row, so
+  nothing is sent twice in parallel. If the dispatcher dies mid-send, Postgres drops the
+  lock, the row is still PENDING, and the next pass resends with the SAME idem_key, which
+  the provider dedupes. The cost is one connection and an open transaction per send,
+  bounded by the new `EMAIL_TIMEOUT_MS` (10 s). The new `EMAIL_BASE_URL` defaults to the
+  fake, like `LLM_BASE_URL`. A timeout or network error is transient: we can't know if
+  the email was delivered, and a resend with the key is safe. 032a = client, 032b = loop.
+- Dispatcher retries (PHX-033, 22 Nov 2026). LLD §7 named `backoff(attempts)` without
+  defining it. Decided: reuse the step formula and config (`backoffMs()` moved out of
+  `runWithRetries` and shared): full jitter, 1 s base, 30 s cap, Retry-After capped, so 8
+  attempts span about 2 minutes. An unclassified error counts as transient (a glitch
+  shouldn't lose an email; a real bug still ends FAILED after 8). The failed row backs off,
+  so the rows behind it are sent meanwhile (fixes B-29). AT_MOST_ONCE (033b): mark SENT and
+  COMMIT before the send, never retry; if the send throws, set FAILED + last_error so an
+  operator sees it may not have arrived.
+- Chaos 4 (PHX-034, 22 Nov 2026): `chaos/p4-outbox.sh`, the phase 4 gate. It crashes the
+  worker at `between_event_and_outbox` and at `after_outbox_commit`, then the dispatcher at
+  `after_send_before_sent`, each one starting a single container with `CRASH_AT` and waiting
+  for exit 137 (D-26). Worker crashes use the kill-loop's simulated lease expiry (RUNNING
+  back to PENDING) until phase 5. AT_LEAST_ONCE only: the dispatcher failpoint is on that
+  path, and AT_MOST_ONCE ordering is proven by unit tests (PHX-033b). It failed as expected
+  on an event committed before its outbox row, and on a dispatcher that changes the key.

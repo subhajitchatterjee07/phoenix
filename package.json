@@ -2,7 +2,7 @@
   "name": "phoenix",
   "version": "0.0.0",
   "private": true,
-  "description": "Durable long-running AI agent that survives kill -9",
+  "description": "Durable AI agent on Postgres: replayable steps, leases, fencing tokens and an outbox, so crashes never cost twice",
   "type": "module",
   "engines": {
     "node": ">=22 <23"
@@ -20,9 +20,14 @@
     "db:psql": "docker compose exec postgres sh -c \"psql -U $POSTGRES_USER -d $POSTGRES_DB\"",
     "db:migrate": "tsx --env-file=.env src/migrate.ts",
     "fake-llm": "tsx testing/fake-llm.ts",
+    "fake-email": "tsx testing/fake-email.ts",
     "chaos:p0": "bash testing/chaos/p0-smoke.sh",
     "seed": "tsx --env-file=.env testing/seed.ts",
-    "chaos:p1": "bash testing/chaos/p1-baseline.sh"
+    "chaos:p1": "bash testing/chaos/p1-baseline.sh",
+    "chaos:kill": "bash testing/chaos/kill-loop.sh",
+    "chaos:p2": "bash testing/chaos/kill-loop.sh 20 200",
+    "chaos:p3": "bash testing/chaos/p3-ratelimit.sh",
+    "chaos:p4": "bash testing/chaos/p4-outbox.sh"
   },
   "repository": {
     "type": "git",

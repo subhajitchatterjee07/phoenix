@@ -15,6 +15,9 @@ const allowlist = z
   })
   .pipe(z.record(z.string(), z.array(z.string())));
 
+/** Named crash points (PHX-030). Placed by PHX-031 (outbox) and PHX-032 (dispatcher). */
+export const FAILPOINTS = ["between_event_and_outbox", "after_outbox_commit", "after_send_before_sent"] as const;
+
 const ConfigSchema = z.object({
   DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, "must start with postgres://"),
   LEASE_SECONDS: positiveInt().default(30),
@@ -32,10 +35,16 @@ const ConfigSchema = z.object({
   LLM_BASE_URL: z.url().default("http://localhost:9001/v1"),
   LLM_API_KEY: z.string().min(1).default("fake"),
   LLM_MODEL: z.string().min(1).default("fake"),
+  // Defaults point at the fake email server (PHX-029); the timeout bounds the outbox row lock.
+  EMAIL_BASE_URL: z.url().default("http://localhost:9002"),
+  EMAIL_TIMEOUT_MS: positiveInt().default(10_000),
   MCP_TOOLS_URL: z.url().default("http://phoenix-tools:8100/mcp"),
   MCP_ALLOWLIST: allowlist.default({
     "phoenix-tools": ["calculate", "analyze_table", "describe_stats", "query_analytics"],
   }),
+  // Chaos tests only. A closed list, so a typo fails at boot instead of never firing.
+  // Empty means unset (compose passes `${CRASH_AT:-}`).
+  CRASH_AT: z.preprocess((v) => (v === "" ? undefined : v), z.enum(FAILPOINTS).optional()),
 });
 
 export type Config = Readonly<z.infer<typeof ConfigSchema>>;
