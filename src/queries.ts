@@ -101,3 +101,13 @@ export async function claim(me: string, db: Pick<pg.Pool, "query"> = pool): Prom
   );
   return rows[0] ?? null;
 }
+
+/** LLD §5.3: extend my lease. false = 0 rows: my token is stale (someone claimed it) or it isn't RUNNING. */
+export async function renew(taskId: number, token: number, db: Pick<pg.Pool, "query"> = pool): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE tasks SET lease_expires_at = now() + $3 * interval '1 second'
+     WHERE task_id = $1 AND fencing_token = $2 AND status = 'RUNNING'`,
+    [taskId, token, config.LEASE_SECONDS],
+  );
+  return rowCount === 1;
+}
