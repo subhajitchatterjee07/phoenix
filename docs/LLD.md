@@ -109,6 +109,12 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_due ON outbox (next_attempt_at) WHERE status = 'PENDING';
 
+-- H5: one row per external provider; every worker waits until `until` before calling it.
+CREATE TABLE provider_cooldown (
+  provider  TEXT        PRIMARY KEY,         -- 'llm' (the dispatcher keeps per-row backoff)
+  until     TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE decisions (
   task_id     BIGINT      NOT NULL REFERENCES tasks,
   step_id     INT         NOT NULL,          -- the request_approval step
@@ -237,6 +243,23 @@ max 5 attempts. `Math.random()` here only affects timing, not results or branche
 `Retry-After` replaces the backoff for that wait but is capped at `BACKOFF_CAP_MS` (30 s), so one
 step never stalls a task for long; a wait is cut short by an aborted signal (→ `Fenced`).
 `step()` saves the attempt count in `events.attempts`.
+
+**Shared cool-down (H5).** The provider's limit is per API key, not per worker, so three
+workers each backing off politely still add up. Before every LLM attempt, `runWithRetries`
+waits until `provider_cooldown.until` for `'llm'` (one indexed read; abortable → `Fenced`).
+On a 429 or 5xx it pushes the cool-down forward, never back:
+```sql
+INSERT INTO provider_cooldown (provider, until) VALUES ('llm', now() + $ms * interval '1 millisecond')
+ON CONFLICT (provider) DO UPDATE SET until = GREATEST(provider_cooldown.until, EXCLUDED.until);
+```
+with `$ms` = `Retry-After` (capped) or `backoffMs(n)`. All times are the database's clock.
+- **A 429 does not use an attempt:** the provider did no work and said "later". 5xx, 408 and
+  timeouts still count toward the 5. Waiting never counts.
+- **Bounded:** if a step has spent more than `OVERLOAD_MAX_WAIT_MS` (15 min) waiting on 429s,
+  it gives up as a permanent failure ("provider overloaded for N min"), recorded as ERROR.
+- **Retry budget:** the shared cool-down is the budget. While it holds, no worker sends
+  anything, so retries can't pile onto an overloaded provider.
+- The heartbeat keeps renewing the lease while a step waits (§5.3).
 Pass `ctx.signal` to `fetch` and to the LLM/MCP clients so a fenced worker stops waiting.
 Classification happens at each tool's boundary: `classifyHttp(status, message, retryAfter)` in
 `step.ts` (seconds or HTTP-date `Retry-After`); `tools/llm.ts` maps the `openai` client's errors.
@@ -475,6 +498,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `STEP_MAX_ATTEMPTS` | 5 |
 | `BACKOFF_BASE_MS` / `BACKOFF_CAP_MS` | 1000 / 30000 |
 | `OUTBOX_MAX_ATTEMPTS` | 8 |
+| `OVERLOAD_MAX_WAIT_MS` | 900000 (15 min): how long one step may wait on 429s before giving up (H5) |
 | `DEFAULT_MAX_STEPS` | 200 |
 | `INLINE_RESULT_MAX_BYTES` | 65536 |
 | `LLM_TIMEOUT_MS` | 60000 |
@@ -502,7 +526,8 @@ Every value is an environment variable of the same name, validated at boot by `s
 ---
 
 ## 11. Open (to design later)
-- H5: shared rate limiter for the LLM provider across workers (token bucket in Postgres), retry budgets.
+- ~~H5~~: decided 22 Nov 2026, a shared cool-down (§4.3). A token bucket (a hard requests-per-minute
+  cap) is the next step if real provider limits need it; a global daily cost cap likewise.
 - L5: `workflow_version` pinned on `tasks` at creation; workers run the matching code version.
 - L5: structured logs with `taskId`, `stepId`, `fencingToken`; traces across takeovers;
   alerts for RUNNING tasks without progress and PENDING outbox rows older than N minutes.

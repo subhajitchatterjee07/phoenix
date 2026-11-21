@@ -235,3 +235,23 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   back to PENDING) until phase 5. AT_LEAST_ONCE only: the dispatcher failpoint is on that
   path, and AT_MOST_ONCE ordering is proven by unit tests (PHX-033b). It failed as expected
   on an event committed before its outbox row, and on a dispatcher that changes the key.
+- H5 spike (PHX-035, 22 Nov 2026): a shared provider limit, retry and cost budgets. The
+  problem: the provider's limit is per API key, but each worker backs off on its own. Three
+  polite workers still add up, and 5 attempts per call multiply the load during an outage.
+  Under sustained overload, steps used up their attempts and were recorded as ERROR, so a
+  few minutes of outage did permanent damage. Decided:
+  1. **A shared cool-down**, not a token bucket. One row, `provider_cooldown('llm', until)`.
+     Any 429 or 5xx pushes `until` forward (Retry-After, else backoff, GREATEST so never
+     back), and every LLM attempt waits it out first. A token bucket would need one write
+     per call on a hot row, plus the provider's real limit to configure it. Deferred until
+     real limits matter.
+  2. **The cool-down is the retry budget.** While it holds, no worker calls the provider.
+  3. **A 429 doesn't use an attempt** (the provider did no work), but waiting is bounded by
+     `OVERLOAD_MAX_WAIT_MS` = 15 min per step. 5xx and timeouts still count toward the 5.
+     I first offered "waiting doesn't count" as enough. It wasn't: every real call during an
+     outage is a 429 and counted, so steps still failed after about 2.5 min. Corrected
+     before deciding.
+  4. **Cost:** per-task `token_budget` and `max_steps` only (P7, PHX-039). No global cap;
+     the provider-side spend limit on the API key is the outer guard.
+  Scope: LLM only; the dispatcher keeps per-row backoff (PHX-033). New tickets: PHX-066
+  (table + shared wait), PHX-067 (429s don't count, bounded wait).
