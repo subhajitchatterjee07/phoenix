@@ -497,7 +497,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
 | `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
 | `chaos/block-loop` | A test step that blocks the event loop for 40 s (reproduces §4.4) |
-| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Chaos 3 (`chaos/p3-ratelimit.sh`, 30% 429s): no task stuck; DONE, or FAILED only by a 5-attempt give-up; every ERROR row is such a give-up; some OK step has attempts > 1; per step, LLM calls ≥ saved attempts. Deliveries per key = 1; takeover ≤ 35 s |
+| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Chaos 3 (`chaos/p3-ratelimit.sh`, 30% 429s): no task stuck; DONE, or FAILED only by a 5-attempt give-up; every ERROR row is such a give-up; some OK step has attempts > 1; per step, LLM calls ≥ saved attempts. Chaos 4 (`chaos/p4-outbox.sh`): crash at each failpoint (worker: `between_event_and_outbox` leaves no rows, `after_outbox_commit` leaves event + 1 outbox row; dispatcher: `after_send_before_sent`); then all tasks DONE, one outbox row per task, all SENT, provider keys = outbox keys, each delivered once, ≥ 1 resent and deduped. Takeover ≤ 35 s (phase 5) |
 
 ---
 
