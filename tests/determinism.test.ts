@@ -2,7 +2,7 @@ import { ESLint } from "eslint";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { now, random, type StepContext } from "../src/step.js";
-import { seedTask } from "../testing/seed.js";
+import { seedRunningTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
 describe("now(ctx) and random(ctx)", () => {
@@ -13,7 +13,7 @@ describe("now(ctx) and random(ctx)", () => {
 
   beforeAll(async () => {
     ({ pool: db, drop } = await createTestDb("determinism"));
-    taskId = await seedTask(db, "goal");
+    taskId = await seedRunningTask(db, "goal");
   });
   afterAll(() => drop());
 

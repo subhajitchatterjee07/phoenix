@@ -37,9 +37,9 @@ export const idemKey = (taskId: number, stepId: number) => createHash("sha256").
 /**
  * Saves a finished step, adds its tokens to the task and, for a side-effect step, writes its
  * outbox row, all in ONE transaction (LLD §5.4, §5.5): a crash leaves all of them or none.
- * UNGUARDED for now: no "my fencing token AND live lease" check until PHX-038 (phase 5).
+ * Returns false, having written nothing, if the task is no longer mine (step() → Fenced).
  */
-export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> {
+export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<boolean> {
   // JSON.stringify, not the raw value: pg would send a JS array as a Postgres array, not JSON.
   const json = e.result === undefined ? null : JSON.stringify(e.result);
   const bytes = json === null ? 0 : Buffer.byteLength(json);
@@ -50,13 +50,17 @@ export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> 
         `(${config.INLINE_RESULT_MAX_BYTES}); blob storage for large results is not built yet (PHX-064)`,
     );
   }
-  await withTransaction(async (client) => {
-    // Tokens first, then the event: if the insert fails (duplicate step), the token
-    // update must roll back with it. The test relies on this order to prove atomicity.
-    await client.query("UPDATE tasks SET tokens_used = tokens_used + $2, updated_at = now() WHERE task_id = $1", [
-      e.taskId,
-      e.tokens,
-    ]);
+  const fenced = new Error("fenced"); // thrown to ROLLBACK, caught below
+  const saved = await withTransaction(async (client) => {
+    // THE GUARD (LLD §5.4, D-32): add my tokens only if the task is still mine (my token, a live
+    // lease, RUNNING). It also row-locks the task until COMMIT, so no claim can bump the token
+    // between this check and the inserts below. 0 rows: write nothing.
+    const guard = await client.query(
+      `UPDATE tasks SET tokens_used = tokens_used + $2, updated_at = now()
+       WHERE task_id = $1 AND fencing_token = $3 AND lease_expires_at > now() AND status = 'RUNNING'`,
+      [e.taskId, e.tokens, e.fencingToken],
+    );
+    if (guard.rowCount === 0) throw fenced;
     await client.query(
       `INSERT INTO events (task_id, step_id, step_type, input_hash, status, result_inline,
                            error, attempts, tokens, fencing_token)
@@ -71,8 +75,13 @@ export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<void> 
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [idemKey(e.taskId, e.stepId), e.taskId, e.stepId, kind, guarantee, recipient, JSON.stringify(payload)],
     );
-  }, db);
+  }, db).then(() => true, (err: unknown) => {
+    if (err === fenced) return false;
+    throw err;
+  });
+  if (!saved) return false;
   if (e.outbox) failpoint("after_outbox_commit"); // Chaos 4: saved and queued, step() never returned
+  return true;
 }
 
 export type ClaimedTask = { taskId: number; token: number; goal: string; input: unknown; maxSteps: number };

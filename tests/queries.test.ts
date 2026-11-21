@@ -4,7 +4,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { idemKey, loadEvent, saveEvent, type NewEvent } from "../src/queries.js";
 import { createTestDb } from "../testing/test-db.js";
-import { seedTask } from "../testing/seed.js";
+import { seedRunningTask } from "../testing/seed.js";
 
 let db: pg.Pool;
 let drop: () => Promise<void>;
@@ -20,7 +20,7 @@ const event = (stepId: number, over: Partial<NewEvent> = {}): NewEvent => ({
 
 beforeAll(async () => {
   ({ pool: db, drop } = await createTestDb("queries"));
-  taskId = await seedTask(db, "goal");
+  taskId = await seedRunningTask(db, "goal");
 });
 afterAll(() => drop());
 
@@ -102,4 +102,17 @@ it("killed right after the commit: both rows exist, so a restart replays the ste
   expect(child.stdout).toBe("");
   expect(await row(8)).toMatchObject({ status: "OK" });
   expect(await outboxRow(8)).toMatchObject({ status: "PENDING" });
+});
+
+it.each([
+  ["my token is stale (another worker claimed it)", "fencing_token = fencing_token + 1"],
+  ["my lease has expired", "lease_expires_at = now() - interval '1 second'"],
+  ["the task left RUNNING", "status = 'DONE'"],
+])("the guard: a save when %s writes nothing (no event, no outbox row, no tokens) and returns false", async (_, change) => {
+  const id = await seedRunningTask(db, "guarded");
+  await db.query(`UPDATE tasks SET ${change} WHERE task_id = $1`, [id]);
+  expect(await saveEvent({ ...event(1, { outbox: email }), taskId: id }, db)).toBe(false);
+  const counts = await db.query(`SELECT (SELECT count(*) FROM events WHERE task_id = $1)::int AS events,
+    (SELECT count(*) FROM outbox WHERE task_id = $1)::int AS outbox, tokens_used FROM tasks WHERE task_id = $1`, [id]);
+  expect(counts.rows[0]).toEqual({ events: 0, outbox: 0, tokens_used: 0 });
 });
