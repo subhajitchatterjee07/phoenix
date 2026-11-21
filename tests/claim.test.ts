@@ -16,7 +16,7 @@ beforeEach(() => db.query("DELETE FROM tasks"));
 it("ten concurrent claimers, one PENDING task: exactly one wins, and the token goes 0 → 1", async () => {
   const id = await seedTask(db, "goal", { sources: ["a"] });
   const won = (await claimers(10)).filter((t) => t !== null);
-  expect(won).toEqual([{ taskId: id, token: 1, goal: "goal", input: { sources: ["a"] }, maxSteps: 200 }]);
+  expect(won).toEqual([{ taskId: id, token: 1, goal: "goal", input: { sources: ["a"] }, maxSteps: 200, tokenBudget: null, tokensUsed: 0 }]);
   const { rows } = await db.query("SELECT status, owner, lease_expires_at > now() AS leased FROM tasks");
   expect(rows).toEqual([{ status: "RUNNING", owner: expect.stringMatching(/^worker-\d$/), leased: true }]);
 });

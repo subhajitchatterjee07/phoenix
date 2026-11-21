@@ -272,3 +272,13 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   lease AND RUNNING; 0 rows → ROLLBACK → `Fenced`). It also locks the task row until
   COMMIT, so no claim can bump the token between the guard and the events/outbox inserts:
   the same safety as LLD §5.4's `INSERT ... WHERE EXISTS`, with one check instead of two.
+- Limits and finish (PHX-039, 22 Nov 2026). The LLD had `step()` fail the task itself when
+  a limit was hit, and didn't say how it learns `tokens_used`. Decided: (1) the claim
+  returns `token_budget` and `tokens_used`; `ctx` carries them, and `step()` adds each newly
+  saved step's tokens. Only the owner adds tokens (guarded saves), so the count is exact
+  with no query per step. A step's cost is only known after it runs, so the budget can be
+  overshot by one step at most; the check is `used >= budget` before each new step.
+  (2) `step()` throws `LimitExceeded`; the worker writes the guarded FAILED with the reason.
+  All task-status writes stay in the worker, and a limit stays distinct from an unexpected
+  error (which PHX-040 leaves to lease expiry). DONE and FAILED are guarded by my token
+  (LLD §5.6); 0 rows means someone else owns the task now, so the worker writes nothing.

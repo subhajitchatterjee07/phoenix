@@ -1,7 +1,7 @@
 import type pg from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { loadEvent, saveEvent } from "../src/queries.js";
-import { Fenced, inputHash, NonDeterminism, PermanentError, step, TransientError, type StepContext } from "../src/step.js";
+import { Fenced, inputHash, LimitExceeded, NonDeterminism, PermanentError, step, TransientError, type StepContext } from "../src/step.js";
 import { seedRunningTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
@@ -127,4 +127,19 @@ it("a stale worker (its token was bumped by a takeover) runs the step but saves 
   const run = step({ ...ctx(), taskId: stale }, "t", {}, async () => ({ value: "paid for, then thrown away" }));
   await expect(run).rejects.toThrow(Fenced);
   expect(await loadEvent(stale, 1, db)).toBeNull();
+});
+
+it("no new step past max_steps: LimitExceeded, fn never called (a saved step still replays)", async () => {
+  const fn = vi.fn(async () => ({ value: 1 }));
+  await step({ ...ctx(), nextStepId: 60, maxSteps: 60 }, "t", {}, fn); // the last allowed step runs
+  await expect(step({ ...ctx(), nextStepId: 61, maxSteps: 60 }, "t", {}, fn)).rejects.toThrow(LimitExceeded);
+  expect(fn).toHaveBeenCalledTimes(1);
+  expect(await step({ ...ctx(), maxSteps: 0 }, "t", {}, fn)).toEqual({ ok: true, value: { summary: "s" } }); // step 1 is saved
+});
+
+it("the token budget: a step may overshoot it, the next one may not start", async () => {
+  const c = { ...ctx(), nextStepId: 70, tokenBudget: 100, tokensUsed: 75 };
+  await step(c, "t", {}, async () => ({ value: 1, tokens: 25 })); // 75 < 100: allowed to run
+  expect(c.tokensUsed).toBe(100);
+  await expect(step(c, "t", {}, async () => ({ value: 2 }))).rejects.toThrow(/token budget 100 used up \(100 tokens\)/);
 });
