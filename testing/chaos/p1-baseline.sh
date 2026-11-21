@@ -39,5 +39,5 @@ wait_done "$first" 120
 done_count=$(sql "SELECT count(*) FROM tasks WHERE task_id >= $first AND status = 'DONE'")
 [ "$done_count" = 50 ] || fail "only $done_count / 50 race tasks ended DONE"
 total=$(stats | node -e 'const s=JSON.parse(require("fs").readFileSync(0)); console.log(Object.values(s).reduce((a,b)=>a+b,0))')
-echo "race: 50/50 DONE, LLM calls $total for 200 needed, wasted $((total - 200)) (naive claim; phase 5 target: 0)"
+echo "race: 50/50 DONE, LLM calls $total for 200 needed, wasted $((total - 200)) (atomic claim since PHX-040a: expect 0)"
 echo "PASS: phase 1 baseline"

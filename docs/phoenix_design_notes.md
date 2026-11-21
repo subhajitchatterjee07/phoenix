@@ -262,3 +262,13 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   calls whose saves will be rejected. The timer is a chained `setTimeout` instead of the
   sketch's `setInterval`, so a slow renew never overlaps the next. `stop()` also has to
   handle a renew that is in flight when it's called (a flag, not just `clearTimeout`).
+- Phase 5 order and guard shape (PHX-038/040a, 22 Nov 2026). Guarded saves need a worker
+  that holds a real lease, but the worker only got `claim()` + heartbeat in PHX-040, two
+  tickets after the guards. Shipping the guards first would have rejected every save.
+  Decided: a new PHX-040a wires the claim + heartbeat into the worker first. The chaos
+  scripts now fast-forward lease expiry (`SET lease_expires_at = now()`) instead of setting
+  a task back to PENDING. Then PHX-038 guards the saves. Guard shape: the `tokens_used`
+  UPDATE at the top of `saveEvent`'s transaction becomes the guard (my token AND a live
+  lease AND RUNNING; 0 rows → ROLLBACK → `Fenced`). It also locks the task row until
+  COMMIT, so no claim can bump the token between the guard and the events/outbox inserts:
+  the same safety as LLD §5.4's `INSERT ... WHERE EXISTS`, with one check instead of two.
