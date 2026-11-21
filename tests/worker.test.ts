@@ -2,7 +2,8 @@ import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { createLlm } from "../src/tools/llm.js";
 import { workOnce } from "../src/worker.js";
-import { Fenced, type StepContext } from "../src/step.js";
+import { claim } from "../src/queries.js";
+import { Fenced, Suspend, type StepContext } from "../src/step.js";
 import { runTask, type Task } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
 import { seedTask } from "../testing/seed.js";
@@ -34,7 +35,7 @@ it("takes a seeded task to DONE, then finds nothing left", async () => {
   expect(await workOnce(db, run)).toBeNull();
 });
 
-it("marks the task FAILED with the reason when the workflow throws (until PHX-040)", async () => {
+it("the workflow's verdict (invalid input: a retry can't fix it) ends the task FAILED with the reason", async () => {
   const id = await seedTask(db, "goal", { sources: [] });
   await workOnce(db, run);
   expect(await statusOf(id)).toMatchObject({ status: "FAILED", failure_reason: expect.stringMatching(/sources/) });
@@ -67,4 +68,26 @@ it("DONE is guarded: if another worker took the task meanwhile, mine is not writ
   const id = await seedTask(db, "goal", sources);
   await workOnce(db, async () => (await db.query("UPDATE tasks SET fencing_token = fencing_token + 1"), "report"));
   expect(await statusOf(id)).toMatchObject({ status: "RUNNING", fencing_token: 2 });
+});
+
+it.each([
+  ["an unexpected error (a bug, the DB down)", new Error("socket hang up")],
+  ["Suspend (paused for approval)", new Suspend("waiting for a decision")],
+])("%s is not a failure: the task is left as it is, and another worker can take it once the lease expires", async (_, err) => {
+  const id = await seedTask(db, "goal", sources);
+  await workOnce(db, async () => { throw err; });
+  expect(await statusOf(id)).toMatchObject({ status: "RUNNING", failure_reason: null });
+  await db.query("UPDATE tasks SET lease_expires_at = now()"); // fast-forward the 30 s lease
+  expect(await claim("another worker", db)).toMatchObject({ taskId: id, token: 2 });
+});
+
+it("3 workers drain 10 tasks: every task DONE, every step paid once", async () => {
+  const ids = await Promise.all(Array.from({ length: 10 }, () => seedTask(db, "goal", sources)));
+  const drain = async () => { while ((await workOnce(db, run)) !== null); };
+  await Promise.all([drain(), drain(), drain()]);
+  const { rows } = await db.query("SELECT count(*)::int AS n FROM tasks WHERE status = 'DONE' AND fencing_token = 1");
+  expect(rows[0].n).toBe(10); // token 1: each task claimed exactly once
+  const calls = (await fake.inject({ url: "/stats" })).json() as Record<string, number>;
+  expect(Object.keys(calls)).toHaveLength(ids.length * 4);
+  expect(new Set(Object.values(calls))).toEqual(new Set([1]));
 });

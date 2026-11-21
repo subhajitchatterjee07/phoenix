@@ -282,3 +282,12 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   All task-status writes stay in the worker, and a limit stays distinct from an unexpected
   error (which PHX-040 leaves to lease expiry). DONE and FAILED are guarded by my token
   (LLD §5.6); 0 rows means someone else owns the task now, so the worker writes nothing.
+- Worker error policy (PHX-040, 22 Nov 2026). The LLD said an unexpected error leaves the
+  task for lease expiry (another worker retries within 30 s). But the workflow also threw
+  plain errors for its own final verdicts (invalid input, "no source could be summarised",
+  a report or email recorded as failed). Those replay to the same error, so under the
+  literal rule they would cycle forever. Decided: a `TaskFailed` class for verdicts
+  (`LimitExceeded` extends it); the worker writes the guarded FAILED for those. Everything
+  else (bugs, the database down at the finish, NonDeterminism after a bad deploy) is logged
+  and left for a retry. A task that keeps hitting the same bug retries every ~30 s forever:
+  the poison-task gap, tracked as B-40 until phase 9 (DLQ).
