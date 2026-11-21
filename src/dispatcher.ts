@@ -8,23 +8,30 @@ import { backoffMs, PermanentError, TransientError } from "./step.js";
 import { email } from "./tools/email.js";
 
 type Provider = Pick<typeof email, "send">;
+type Row = { idemKey: string; recipient: string; payload: object; attempts: number; guarantee: string };
 const IDLE_MS = 2_000; // LLD §7
 
 /**
  * Sends at most one due outbox row; returns its idem_key, or null if none was due (LLD §7).
  * The row lock is HELD during the send (D-28): other dispatchers skip it; a crash drops it and
  * the next pass resends with the same key. A failed send is recorded (see recordFailure).
- * AT_MOST_ONCE: PHX-033b.
+ * AT_MOST_ONCE rows take another path: see sendAtMostOnce.
  */
 export async function dispatchOnce(db: pg.Pool = pool, provider: Provider = email): Promise<string | null> {
-  return withTransaction(async (client) => {
-    const { rows } = await client.query<{ idemKey: string; recipient: string; payload: object; attempts: number }>(
-      `SELECT idem_key AS "idemKey", recipient, payload, attempts FROM outbox
+  let atMostOnce = undefined as Row | undefined; // sent after the COMMIT, below
+  const key = await withTransaction(async (client) => {
+    const { rows } = await client.query<Row>(
+      `SELECT idem_key AS "idemKey", recipient, payload, attempts, guarantee FROM outbox
        WHERE status = 'PENDING' AND next_attempt_at <= now()
        ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`,
     );
     const row = rows[0];
     if (!row) return null;
+    if (row.guarantee === "AT_MOST_ONCE") {
+      await client.query("UPDATE outbox SET status = 'SENT', sent_at = now(), attempts = attempts + 1 WHERE idem_key = $1", [row.idemKey]);
+      atMostOnce = row;
+      return row.idemKey;
+    }
     try {
       await provider.send(row.recipient, row.payload, { idempotencyKey: row.idemKey });
     } catch (err) {
@@ -36,6 +43,23 @@ export async function dispatchOnce(db: pg.Pool = pool, provider: Provider = emai
     console.log(`outbox ${row.idemKey.slice(0, 12)}… SENT`);
     return row.idemKey;
   }, db);
+  if (atMostOnce) await sendAtMostOnce(db, provider, atMostOnce);
+  return key;
+}
+
+/**
+ * HLD §6 "record before send": SENT is already COMMITTED, so a crash from here on can only
+ * lose this email, never send it twice. Never retried; if the send throws, the row becomes
+ * FAILED (alert): after a timeout nobody knows if it arrived (D-29).
+ */
+async function sendAtMostOnce(db: pg.Pool, provider: Provider, row: Row) {
+  try {
+    await provider.send(row.recipient, row.payload, { idempotencyKey: row.idemKey });
+    console.log(`outbox ${row.idemKey.slice(0, 12)}… SENT (at most once)`);
+  } catch (err) {
+    await db.query("UPDATE outbox SET status = 'FAILED', last_error = $2 WHERE idem_key = $1", [row.idemKey, String(err)]);
+    console.error(`ALERT outbox ${row.idemKey.slice(0, 12)}… AT_MOST_ONCE send failed, not retried: ${String(err)}`);
+  }
 }
 
 /**
