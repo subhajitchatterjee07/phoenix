@@ -440,8 +440,8 @@ while (true) {
 - `backoff(attempts)` = `backoffMs()` in `step.ts`, the step-retry formula and config (§4.3):
   full jitter, base 1 s, cap 30 s, a 429's `Retry-After` wins but is capped. An error that is
   neither transient nor permanent counts as transient (still FAILED after 8).
-- AT_MOST_ONCE rows: mark SENT and COMMIT before calling the provider (a separate step after the row transaction), never retry; a failed send sets FAILED + `last_error`. Otherwise: mark SENT before calling the provider and never retry
-  (only for providers without idempotency keys).
+- AT_MOST_ONCE rows (only for providers without idempotency keys): mark SENT and COMMIT
+  before calling the provider, never retry; if the send throws, set FAILED + `last_error`.
 - The dispatcher never reads or writes `tasks`.
 
 ---
