@@ -211,3 +211,12 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   LLM writes the body; the subject is the task goal. Failpoints `between_event_and_outbox`
   (inside the transaction) and `after_outbox_commit` live in `saveEvent`. 031a = save,
   031b = step() + workflow.
+- Dispatcher send (PHX-032, 22 Nov 2026). LLD §7 locked a row "in a transaction" without
+  saying whether the lock is held during the HTTP send. Decided: HOLD it. BEGIN, lock one
+  due row (SKIP LOCKED), send, mark SENT, COMMIT. A second dispatcher skips the row, so
+  nothing is sent twice in parallel. If the dispatcher dies mid-send, Postgres drops the
+  lock, the row is still PENDING, and the next pass resends with the SAME idem_key, which
+  the provider dedupes. The cost is one connection and an open transaction per send,
+  bounded by the new `EMAIL_TIMEOUT_MS` (10 s). The new `EMAIL_BASE_URL` defaults to the
+  fake, like `LLM_BASE_URL`. A timeout or network error is transient: we can't know if
+  the email was delivered, and a resend with the key is safe. 032a = client, 032b = loop.

@@ -12,6 +12,7 @@ x-app: &app
     LLM_BASE_URL: ${LLM_BASE_URL:-http://fake-llm:9001/v1}
     LLM_API_KEY: ${LLM_API_KEY:-fake}
     LLM_MODEL: ${LLM_MODEL:-fake}
+    EMAIL_BASE_URL: ${EMAIL_BASE_URL:-http://fake-email:9002}
     CRASH_AT: ${CRASH_AT:-} # chaos tests only: a failpoint name (src/config.ts)
 
 services:

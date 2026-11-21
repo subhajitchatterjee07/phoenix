@@ -475,6 +475,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `DEFAULT_MAX_STEPS` | 200 |
 | `INLINE_RESULT_MAX_BYTES` | 65536 |
 | `LLM_TIMEOUT_MS` | 60000 |
+| `EMAIL_BASE_URL` / `EMAIL_TIMEOUT_MS` | the fake: `http://localhost:9002` (compose: `http://fake-email:9002`) / 10000. `POST {base}/emails`, body `{ to, subject, body }`, header `Idempotency-Key`. The timeout also bounds how long the dispatcher holds an outbox row lock |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | the fake: `http://localhost:9001/v1` / `fake` / `fake` (compose: `http://fake-llm:9001/v1`). Real: `https://openrouter.ai/api/v1` / your key / e.g. `deepseek/deepseek-chat` |
 | `MCP_TOOLS_URL` | `http://phoenix-tools:8100/mcp` |
 | `MCP_ALLOWLIST` | `{ "phoenix-tools": ["calculate","analyze_table","describe_stats","query_analytics"] }` |
