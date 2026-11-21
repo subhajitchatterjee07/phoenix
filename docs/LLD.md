@@ -311,7 +311,8 @@ while (true) {
   catch (e) {
     if (e instanceof Suspend) {}                         // already paused
     else if (e instanceof Fenced) log("fenced off", taskId)
-    else throw-or-log (unexpected: leave task; lease expiry hands it to another worker)
+    else if (e instanceof TaskFailed) markFailed(e)     // the workflow's verdict; LimitExceeded is one (D-34)
+    else log (unexpected: leave task; lease expiry hands it to another worker)
   } finally { clearInterval(hb) }
 }
 ```

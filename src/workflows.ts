@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { step, type StepContext, type StepResult } from "./step.js";
+import { step, TaskFailed, type StepContext, type StepResult } from "./step.js";
 import { llm as defaultLlm, type ChatMessage, type LlmCall, type LlmReply } from "./tools/llm.js";
 
 export type Task = { taskId: number; goal: string; input: unknown };
@@ -21,7 +21,9 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
   const call = (stepId: number, signal: AbortSignal) => ({ taskId: task.taskId, stepId, signal });
 
   // Fetch: deterministic (reads the task row), so not a step
-  const { sources, email } = Input.parse(task.input);
+  const input = Input.safeParse(task.input);
+  if (!input.success) throw new TaskFailed(`invalid task input: ${z.prettifyError(input.error)}`); // a retry can't fix it
+  const { sources, email } = input.data;
 
   // Steps 1..N: summarise each source
   const summaries: string[] = [];
@@ -42,7 +44,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
     summaries.push(summary.ok ? summary.value : `not available (${summary.error})`);
     if (summary.ok) summarised++;
   }
-  if (summarised === 0) throw new Error(`no source could be summarised: ${summaries.join("; ")}`);
+  if (summarised === 0) throw new TaskFailed(`no source could be summarised: ${summaries.join("; ")}`);
 
   // Step N+1: write the report from all summaries
   const report = await step(ctx, "write_report", { goal: task.goal, summaries }, async (a, meta) => {
@@ -76,7 +78,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
 
 /** The report is the task's result: if it failed for good, there is nothing to deliver. */
 function valueOf<T>(result: StepResult<T>): T {
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) throw new TaskFailed(result.error); // recorded: a replay would end here again
   return result.value;
 }
 

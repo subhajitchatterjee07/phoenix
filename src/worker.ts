@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { pool } from "./db.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { claim, type ClaimedTask } from "./queries.js";
-import { Fenced, type StepContext } from "./step.js";
+import { Fenced, Suspend, TaskFailed, type StepContext } from "./step.js";
 import { runTask, type Task } from "./workflows.js";
 
 const WORKER_ID = hostname();
@@ -23,8 +23,9 @@ async function finish(db: Db, task: ClaimedTask, set: string, params: unknown[] 
 
 /**
  * Claims at most one task (atomic claim + lease, LLD §5.2), runs it under a heartbeat (§5.3),
- * and returns its id, or null if nothing was claimable. Not yet: Suspend and unexpected
- * errors (PHX-040).
+ * and returns its id, or null if nothing was claimable. How it ends (LLD §5.1, D-34):
+ * DONE; FAILED on the workflow's verdict (TaskFailed); dropped on Fenced; paused on Suspend;
+ * anything else is LEFT: the lease expires and another worker retries within LEASE_SECONDS.
  */
 export async function workOnce(db: Db, run: (ctx: StepContext, task: Task) => Promise<string> = runTask) {
   const task = await claim(WORKER_ID, db);
@@ -44,10 +45,16 @@ export async function workOnce(db: Db, run: (ctx: StepContext, task: Task) => Pr
       console.log(`task ${task.taskId} dropped by ${WORKER_ID}: ${err.message}`); // design rule 5
       return task.taskId;
     }
-    // LimitExceeded: FAILED by design (P7). Until PHX-040, an unexpected error fails it too
-    // (the LLD leaves that to lease expiry).
-    await finish(db, task, "status = 'FAILED', failure_reason = $3", [String(err)]);
-    console.error(`task ${task.taskId} FAILED: ${String(err)}`);
+    if (err instanceof Suspend) {
+      console.log(`task ${task.taskId} paused: ${err.message}`); // the step already set WAITING_APPROVAL
+    } else if (err instanceof TaskFailed) {
+      await finish(db, task, "status = 'FAILED', failure_reason = $3", [String(err)]);
+      console.error(`task ${task.taskId} FAILED: ${String(err)}`);
+    } else {
+      // A bug, the database down at the finish, NonDeterminism after a bad deploy: a retry may
+      // succeed. Repeating forever is the known poison-task gap (phase 9 DLQ, B-40).
+      console.error(`task ${task.taskId}: unexpected error, left for lease expiry and a retry: ${String(err)}`);
+    }
   } finally {
     stopHeartbeat();
   }

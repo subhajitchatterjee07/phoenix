@@ -55,7 +55,8 @@ export type StepResult<T> = { ok: true; value: T } | { ok: false; error: string 
 export class Suspend extends Error { override name = "Suspend"; } // task paused (approval): stop executing
 export class Fenced extends Error { override name = "Fenced"; } // my write was rejected: drop the task
 export class NonDeterminism extends Error { override name = "NonDeterminism"; } // saved step replayed with other args
-export class LimitExceeded extends Error { override name = "LimitExceeded"; } // step limit / token budget: the worker FAILs the task
+export class TaskFailed extends Error { override name = "TaskFailed"; } // the workflow's final verdict: the worker FAILs the task
+export class LimitExceeded extends TaskFailed { override name = "LimitExceeded"; } // step limit / token budget (HLD P7)
 export class PermanentError extends Error {
   override name = "PermanentError";
   attempts = 1; // set by runWithRetries, saved as events.attempts
