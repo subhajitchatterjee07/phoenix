@@ -102,12 +102,17 @@ export async function runWithRetries<T>(
       if (n >= policy.maxAttempts) {
         throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
       }
-      // Full jitter: Math.random() only shifts WHEN we retry, never a result or a branch.
-      const backoff = Math.random() * Math.min(policy.capMs, policy.baseMs * 2 ** (n - 1));
-      // A 429's Retry-After wins over backoff, capped so one step never stalls the task for long.
-      await sleep(Math.min(err.retryAfterMs ?? backoff, policy.capMs), signal);
+      await sleep(backoffMs(n, err.retryAfterMs, policy), signal);
     }
   }
+}
+
+/** How long to wait after failed attempt n (LLD §4.3); the dispatcher uses it too (LLD §7). */
+export function backoffMs(n: number, retryAfterMs?: number, policy: RetryPolicy = policyFromConfig()): number {
+  // Full jitter: Math.random() only shifts WHEN we retry, never a result or a branch.
+  const backoff = Math.random() * Math.min(policy.capMs, policy.baseMs * 2 ** (n - 1));
+  // A 429's Retry-After wins over backoff, capped so one wait never stalls things for long.
+  return Math.min(retryAfterMs ?? backoff, policy.capMs);
 }
 
 /** A wait the heartbeat can cut short: aborting the signal ends it at once with Fenced. */
