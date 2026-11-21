@@ -165,8 +165,12 @@ and avoid the more expensive failure.
 | Cost budget per task | configurable (tokens) | P7 |
 
 Load is small: 3 workers polling every 5 s ≈ 36 indexed queries/min.
-**Open (H5, before running multiple workers):** a rate limit shared across all workers for the
-LLM provider, plus retry budgets. See §10.
+**Shared provider limit (H5, decided 22 Nov 2026):** the LLM provider's limit is per API key,
+so workers share one **cool-down** in Postgres. Any 429 or 5xx pushes it forward (Retry-After,
+else backoff), and every LLM call waits it out first, so all workers back off together. A 429
+does not use up one of a step's attempts (the provider did no work); a step gives up only after
+`OVERLOAD_MAX_WAIT_MS` (15 min) of overload. Cost: per-task token budget and max steps (P7);
+no global cap. Details: LLD §4.3.
 
 ---
 
@@ -211,7 +215,7 @@ microservices), plus a separate stateless Python tools server:
 
 | Item | Needed before |
 |---|---|
-| H5: shared LLM rate limiter across workers; retry budgets; behaviour under sustained overload | Phase 5 (multiple workers) |
+| ~~H5: shared LLM rate limiter across workers; retry budgets; behaviour under sustained overload~~ | Decided 22 Nov 2026 (capacity table note above, LLD §4.3) |
 | L5: changing workflow code while tasks are in flight (version pinning per task) | Redeploying during long runs |
 | L5: observability (structured logs per task/step, traces across takeovers, alerts for stuck tasks and stuck outbox rows) | Phase 8 |
 | Plan validation rules (allowed step types, argument schemas) | Phase 7 |
