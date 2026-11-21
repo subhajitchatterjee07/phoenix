@@ -188,6 +188,8 @@ interface StepContext {
   nextStepId: number;         // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal;        // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  tokenBudget?: number | null; // from the claim; null = unlimited
+  tokensUsed?: number;        // from the claim, + each newly saved step's tokens (one owner: exact)
   db?: pg.Pool;               // tests only: a throwaway database; defaults to the process pool
 }
 
@@ -199,6 +201,7 @@ type StepMeta = { stepId: number; signal: AbortSignal };  // told to fn: header 
 class Suspend extends Error {}        // task paused (approval): stop executing
 class Fenced extends Error {}         // my write was rejected: drop the task
 class NonDeterminism extends Error {} // saved step replayed with different args
+class LimitExceeded extends Error {}  // max_steps / token_budget reached: the worker FAILs the task
 class PermanentError extends Error {}
 class TransientError extends Error { constructor(msg: string, public retryAfterMs?: number) { super(msg) } }
 ```
@@ -214,7 +217,8 @@ inputHash = sha256(canonicalJson({ type, args }))
        return row as StepResult        // saved value or saved error
 
 2. if ctx.signal.aborted: throw Fenced
-   if stepId > ctx.maxSteps or budget exceeded: fail task (§5.6), throw Fenced
+   if stepId > ctx.maxSteps or ctx.tokensUsed >= ctx.tokenBudget: throw LimitExceeded
+       (the worker writes the guarded FAILED with that reason, §5.6; D-33)
 
 3. result = await runWithRetries(fn, args, ctx.signal)      // §4.3
 

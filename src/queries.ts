@@ -84,7 +84,9 @@ export async function saveEvent(e: NewEvent, db: pg.Pool = pool): Promise<boolea
   return true;
 }
 
-export type ClaimedTask = { taskId: number; token: number; goal: string; input: unknown; maxSteps: number };
+export type ClaimedTask = {
+  taskId: number; token: number; goal: string; input: unknown; maxSteps: number; tokenBudget: number | null; tokensUsed: number;
+};
 
 /**
  * LLD §5.2: atomically take the oldest claimable task: PENDING, or RUNNING with an expired
@@ -105,7 +107,8 @@ export async function claim(me: string, db: Pick<pg.Pool, "query"> = pool): Prom
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING task_id AS "taskId", fencing_token AS token, goal, input, max_steps AS "maxSteps"`,
+     RETURNING task_id AS "taskId", fencing_token AS token, goal, input, max_steps AS "maxSteps",
+               token_budget AS "tokenBudget", tokens_used AS "tokensUsed"`,
     [me, config.LEASE_SECONDS],
   );
   return rows[0] ?? null;

@@ -44,6 +44,8 @@ export interface StepContext {
   nextStepId: number; // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal; // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  tokenBudget?: number | null; // from the claim; null or absent = unlimited (HLD P7)
+  tokensUsed?: number; // from the claim, then + each newly saved step's tokens
   db?: pg.Pool; // tests only: a throwaway database; defaults to the process pool
 }
 
@@ -53,6 +55,7 @@ export type StepResult<T> = { ok: true; value: T } | { ok: false; error: string 
 export class Suspend extends Error { override name = "Suspend"; } // task paused (approval): stop executing
 export class Fenced extends Error { override name = "Fenced"; } // my write was rejected: drop the task
 export class NonDeterminism extends Error { override name = "NonDeterminism"; } // saved step replayed with other args
+export class LimitExceeded extends Error { override name = "LimitExceeded"; } // step limit / token budget: the worker FAILs the task
 export class PermanentError extends Error {
   override name = "PermanentError";
   attempts = 1; // set by runWithRetries, saved as events.attempts
@@ -162,8 +165,14 @@ export async function step<A, T>(
     return saved.status === "OK" ? { ok: true, value: saved.result as T } : { ok: false, error: saved.error ?? "" };
   }
 
-  // 2. A fenced worker starts no new work. Step limit and token budget: PHX-039.
+  // 2. A fenced worker starts no new work, and no task runs past its limits (HLD P7). A step's
+  //    cost is only known after it runs, so the budget can be overshot by one step at most.
   if (ctx.signal.aborted) throw new Fenced(`task ${ctx.taskId} step ${stepId}: lease lost, not running ${type}`);
+  if (stepId > ctx.maxSteps) throw new LimitExceeded(`step limit ${ctx.maxSteps} reached (next: ${type})`);
+  const used = ctx.tokensUsed ?? 0;
+  if (ctx.tokenBudget != null && used >= ctx.tokenBudget) {
+    throw new LimitExceeded(`token budget ${ctx.tokenBudget} used up (${used} tokens) before step ${stepId}`);
+  }
 
   // 3. Run, retrying transient failures (LLD §4.3). A permanent failure is an OUTCOME: it is
   //    saved as an ERROR row below and replayed as-is. Anything else (Fenced, a bug) propagates
@@ -198,6 +207,7 @@ export async function step<A, T>(
     throw new Fenced(`task ${ctx.taskId} step ${stepId}: another worker already saved it`, { cause: err });
   }
   if (!written) throw new Fenced(`task ${ctx.taskId} step ${stepId}: not mine any more (token ${ctx.token}), nothing saved`);
+  ctx.tokensUsed = used + tokens;
   return outcome;
 }
 

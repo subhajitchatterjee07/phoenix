@@ -52,3 +52,19 @@ it("two workers start together on one task: one claims it, the other finds nothi
   expect((await fake.inject({ url: "/stats" })).json()).toEqual(Object.fromEntries([1, 2, 3, 4].map((s) => [`${id}:${s}`, 1])));
   expect(await statusOf(id)).toMatchObject({ status: "DONE", owner: null, lease_expires_at: null, fencing_token: 1 });
 });
+
+it.each([
+  ["max_steps = 2", "max_steps = 2", /step limit 2 reached/],
+  ["a token budget of 1", "token_budget = 1", /token budget 1 used up/],
+])("a task over its limit (%s) ends FAILED with the reason", async (_, limit, reason) => {
+  const id = await seedTask(db, "goal", sources);
+  await db.query(`UPDATE tasks SET ${limit}`);
+  await workOnce(db, run);
+  expect(await statusOf(id)).toMatchObject({ status: "FAILED", failure_reason: expect.stringMatching(reason), owner: null });
+});
+
+it("DONE is guarded: if another worker took the task meanwhile, mine is not written", async () => {
+  const id = await seedTask(db, "goal", sources);
+  await workOnce(db, async () => (await db.query("UPDATE tasks SET fencing_token = fencing_token + 1"), "report"));
+  expect(await statusOf(id)).toMatchObject({ status: "RUNNING", fencing_token: 2 });
+});

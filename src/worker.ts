@@ -5,19 +5,26 @@ import type pg from "pg";
 import { config } from "./config.js";
 import { pool } from "./db.js";
 import { startHeartbeat } from "./heartbeat.js";
-import { claim } from "./queries.js";
+import { claim, type ClaimedTask } from "./queries.js";
 import { Fenced, type StepContext } from "./step.js";
 import { runTask, type Task } from "./workflows.js";
 
 const WORKER_ID = hostname();
 type Db = Pick<pg.Pool, "query">;
-const setStatus = (db: Db, sql: string, params: unknown[]) =>
-  db.query(`UPDATE tasks SET ${sql}, updated_at = now() WHERE task_id = $1`, params);
+/** LLD §5.6: end my task, guarded by my token. 0 rows: it isn't mine any more; leave it to its owner. */
+async function finish(db: Db, task: ClaimedTask, set: string, params: unknown[] = []) {
+  const { rowCount } = await db.query(
+    `UPDATE tasks SET ${set}, owner = NULL, lease_expires_at = NULL, updated_at = now()
+     WHERE task_id = $1 AND fencing_token = $2 AND status = 'RUNNING'`,
+    [task.taskId, task.token, ...params],
+  );
+  if (rowCount === 0) console.log(`task ${task.taskId}: not mine any more at the finish (token ${task.token}), left as is`);
+}
 
 /**
  * Claims at most one task (atomic claim + lease, LLD §5.2), runs it under a heartbeat (§5.3),
- * and returns its id, or null if nothing was claimable. Not yet: guarded saves (PHX-038),
- * guarded DONE / FAILED (PHX-039), Suspend and unexpected errors (PHX-040).
+ * and returns its id, or null if nothing was claimable. Not yet: Suspend and unexpected
+ * errors (PHX-040).
  */
 export async function workOnce(db: Db, run: (ctx: StepContext, task: Task) => Promise<string> = runTask) {
   const task = await claim(WORKER_ID, db);
@@ -26,18 +33,20 @@ export async function workOnce(db: Db, run: (ctx: StepContext, task: Task) => Pr
   const controller = new AbortController(); // aborted by the heartbeat when the task is no longer mine
   const stopHeartbeat = startHeartbeat(task.taskId, task.token, controller, { db });
   try {
-    const ctx = { taskId: task.taskId, token: task.token, nextStepId: 1, signal: controller.signal, maxSteps: task.maxSteps };
+    const { taskId, token, maxSteps, tokenBudget, tokensUsed } = task;
+    const ctx = { taskId, token, nextStepId: 1, signal: controller.signal, maxSteps, tokenBudget, tokensUsed };
     const report = await run(ctx, task);
     // tokens_used is already added per step by saveEvent; adding it here would count twice.
-    await setStatus(db, "status = 'DONE', owner = NULL, lease_expires_at = NULL", [task.taskId]);
+    await finish(db, task, "status = 'DONE'");
     console.log(`task ${task.taskId} DONE by ${WORKER_ID}: ${report}`);
   } catch (err) {
     if (err instanceof Fenced) {
       console.log(`task ${task.taskId} dropped by ${WORKER_ID}: ${err.message}`); // design rule 5
       return task.taskId;
     }
-    // Until PHX-040: an unexpected error fails the task (the LLD leaves it to lease expiry).
-    await setStatus(db, "status = 'FAILED', owner = NULL, lease_expires_at = NULL, failure_reason = $2", [task.taskId, String(err)]);
+    // LimitExceeded: FAILED by design (P7). Until PHX-040, an unexpected error fails it too
+    // (the LLD leaves that to lease expiry).
+    await finish(db, task, "status = 'FAILED', failure_reason = $3", [String(err)]);
     console.error(`task ${task.taskId} FAILED: ${String(err)}`);
   } finally {
     stopHeartbeat();
