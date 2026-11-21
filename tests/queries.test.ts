@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { loadEvent, saveEvent, type NewEvent } from "../src/queries.js";
+import { idemKey, loadEvent, saveEvent, type NewEvent } from "../src/queries.js";
 import { createTestDb } from "../testing/test-db.js";
 import { seedTask } from "../testing/seed.js";
 
@@ -56,4 +58,48 @@ it("loadEvent returns null for a step that never finished", async () => {
 it("loadEvent returns a recorded ERROR as a value: no result, the error text", async () => {
   await saveEvent(event(3, { status: "ERROR", result: undefined, error: "404 Not Found", attempts: 5 }), db);
   expect(await loadEvent(taskId, 3, db)).toMatchObject({ status: "ERROR", result: null, error: "404 Not Found", attempts: 5 });
+});
+
+const email = { kind: "email", guarantee: "AT_LEAST_ONCE", recipient: "a@example.com", payload: { subject: "s", body: "b" } } as const;
+const outboxRow = async (stepId: number) =>
+  (await db.query("SELECT idem_key, kind, guarantee, recipient, payload, status FROM outbox WHERE task_id = $1 AND step_id = $2", [taskId, stepId])).rows[0];
+
+it("a side-effect step saves its event and a PENDING outbox row keyed sha256('task:step')", async () => {
+  await saveEvent(event(5, { outbox: email }), db);
+  expect(await row(5)).toMatchObject({ status: "OK" });
+  expect(await outboxRow(5)).toEqual({
+    idem_key: createHash("sha256").update(`${taskId}:5`).digest("hex"),
+    kind: "email", guarantee: "AT_LEAST_ONCE", recipient: "a@example.com", payload: { subject: "s", body: "b" }, status: "PENDING",
+  });
+});
+
+it("if the outbox insert fails, the event and the tokens roll back with it", async () => {
+  await db.query("INSERT INTO outbox (idem_key, task_id, step_id, kind, guarantee, recipient, payload) VALUES ($1, $2, 6, 'email', 'AT_LEAST_ONCE', 'x', '{}')", [idemKey(taskId, 6), taskId]);
+  const before = await tokensUsed();
+  await expect(saveEvent(event(6, { outbox: email }), db)).rejects.toMatchObject({ code: "23505" });
+  expect(await row(6)).toBeUndefined();
+  expect(await tokensUsed()).toBe(before);
+});
+
+// kill -9 in the middle of saveEvent: a real child process on this test's database.
+const saveAndCrash = (stepId: number, crashAt: string) =>
+  spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `
+    import { saveEvent } from "./src/queries.ts";
+    await saveEvent(${JSON.stringify(event(stepId, { outbox: email }))});
+    console.log("returned");`],
+  { env: { ...process.env, DATABASE_URL: (db as unknown as { options: { connectionString: string } }).options.connectionString, CRASH_AT: crashAt }, encoding: "utf8", timeout: 20_000 });
+
+it("killed between the event and outbox inserts: neither row exists", async () => {
+  const child = saveAndCrash(7, "between_event_and_outbox");
+  expect(child.signal).toBe("SIGKILL");
+  expect(await row(7)).toBeUndefined();
+  expect(await outboxRow(7)).toBeUndefined();
+});
+
+it("killed right after the commit: both rows exist, so a restart replays the step and sends nothing new", async () => {
+  const child = saveAndCrash(8, "after_outbox_commit");
+  expect(child.signal).toBe("SIGKILL");
+  expect(child.stdout).toBe("");
+  expect(await row(8)).toMatchObject({ status: "OK" });
+  expect(await outboxRow(8)).toMatchObject({ status: "PENDING" });
 });
