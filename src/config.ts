@@ -35,6 +35,9 @@ const ConfigSchema = z.object({
   LLM_BASE_URL: z.url().default("http://localhost:9001/v1"),
   LLM_API_KEY: z.string().min(1).default("fake"),
   LLM_MODEL: z.string().min(1).default("fake"),
+  // Defaults point at the fake email server (PHX-029); the timeout bounds the outbox row lock.
+  EMAIL_BASE_URL: z.url().default("http://localhost:9002"),
+  EMAIL_TIMEOUT_MS: positiveInt().default(10_000),
   MCP_TOOLS_URL: z.url().default("http://phoenix-tools:8100/mcp"),
   MCP_ALLOWLIST: allowlist.default({
     "phoenix-tools": ["calculate", "analyze_table", "describe_stats", "query_analytics"],
