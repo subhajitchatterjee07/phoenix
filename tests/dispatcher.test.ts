@@ -19,9 +19,9 @@ let taskId: number;
 let nextStep = 1;
 const stats = async () => (await fake.inject({ url: "/stats" })).json();
 const outbox = async () => (await db.query("SELECT step_id, status, attempts, sent_at IS NOT NULL AS sent FROM outbox ORDER BY step_id")).rows;
-const queueEmail = () =>
+const queueEmail = (guarantee: "AT_LEAST_ONCE" | "AT_MOST_ONCE" = "AT_LEAST_ONCE") =>
   saveEvent({ taskId, stepId: nextStep++, stepType: "send_email", inputHash: "h", status: "OK", result: "body", error: null, attempts: 1,
-    tokens: 0, fencingToken: 0, outbox: { kind: "email", guarantee: "AT_LEAST_ONCE", recipient: "a@example.com", payload: { subject: "s", body: "b" } } }, db);
+    tokens: 0, fencingToken: 0, outbox: { kind: "email", guarantee, recipient: "a@example.com", payload: { subject: "s", body: "b" } } }, db);
 
 beforeAll(async () => {
   fakeUrl = await fake.listen({ host: "127.0.0.1", port: 0 });
@@ -102,4 +102,24 @@ it("killed after the send, before SENT: the next pass resends with the same key,
   const key = await dispatchOnce(db, email);
   expect(await stats()).toEqual({ [key!]: { requests: 2, deliveries: 1 } });
   expect((await outbox())[0].status).toBe("SENT");
+});
+
+it("AT_MOST_ONCE: SENT is committed BEFORE the send, so a crash during it can never cause a resend", async () => {
+  await queueEmail("AT_MOST_ONCE");
+  let statusDuringSend = "";
+  const key = await dispatchOnce(db, {
+    send: async (...a) => {
+      statusDuringSend = (await outbox())[0].status; // another connection: only committed data
+      return email.send(...a);
+    },
+  });
+  expect(statusDuringSend).toBe("SENT");
+  expect(await stats()).toEqual({ [key!]: { requests: 1, deliveries: 1 } });
+});
+
+it("AT_MOST_ONCE: a failed send is never retried; the row ends FAILED with the error", async () => {
+  await queueEmail("AT_MOST_ONCE");
+  await dispatchOnce(db, failWith(new TransientError("HTTP 503")));
+  expect(await failure()).toMatchObject({ status: "FAILED", attempts: 1, last_error: "TransientError: HTTP 503" });
+  expect(await dispatchOnce(db, email)).toBeNull();
 });
