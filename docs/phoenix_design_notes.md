@@ -228,3 +228,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   so the rows behind it are sent meanwhile (fixes B-29). AT_MOST_ONCE (033b): mark SENT and
   COMMIT before the send, never retry; if the send throws, set FAILED + last_error so an
   operator sees it may not have arrived.
+- Chaos 4 (PHX-034, 22 Nov 2026): `chaos/p4-outbox.sh`, the phase 4 gate. It crashes the
+  worker at `between_event_and_outbox` and at `after_outbox_commit`, then the dispatcher at
+  `after_send_before_sent`, each one starting a single container with `CRASH_AT` and waiting
+  for exit 137 (D-26). Worker crashes use the kill-loop's simulated lease expiry (RUNNING
+  back to PENDING) until phase 5. AT_LEAST_ONCE only: the dispatcher failpoint is on that
+  path, and AT_MOST_ONCE ordering is proven by unit tests (PHX-033b). It failed as expected
+  on an event committed before its outbox row, and on a dispatcher that changes the key.
