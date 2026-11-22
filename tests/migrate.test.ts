@@ -21,17 +21,17 @@ afterAll(async () => {
   await admin.end();
 });
 
-it("three migrators starting together apply 001 exactly once", async () => {
+it("three migrators starting together apply each migration exactly once", async () => {
   const clients = [1, 2, 3].map(() => new pg.Client({ connectionString: testUrl() }));
   for (const c of clients) await c.connect();
   try {
     const results = await Promise.all(clients.map((c) => migrate(c)));
-    expect(results.flat()).toEqual(["001_init.sql"]);
+    expect(results.flat()).toEqual(["001_init.sql", "002_provider_cooldown.sql"]);
 
     const { rows } = await clients[0]!.query<{ tablename: string }>(
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename");
     expect(rows.map((r) => r.tablename)).toEqual(
-      ["decisions", "events", "outbox", "schema_migrations", "tasks"]);
+      ["decisions", "events", "outbox", "provider_cooldown", "schema_migrations", "tasks"]);
   } finally {
     for (const c of clients) await c.end();
   }

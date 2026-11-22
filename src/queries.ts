@@ -123,3 +123,21 @@ export async function renew(taskId: number, token: number, db: Pick<pg.Pool, "qu
   );
   return rowCount === 1;
 }
+
+/** H5 (LLD §4.3): how long until `provider` may be called again, by the database's clock. 0 = now. */
+export async function cooldownRemainingMs(provider: string, db: Pick<pg.Pool, "query"> = pool): Promise<number> {
+  const { rows } = await db.query<{ ms: number }>(
+    "SELECT GREATEST(0, extract(epoch FROM until - now()) * 1000)::float8 AS ms FROM provider_cooldown WHERE provider = $1",
+    [provider],
+  );
+  return rows[0]?.ms ?? 0;
+}
+
+/** H5: nobody calls `provider` for the next `ms`. Pushes the cool-down forward, never back. */
+export async function extendCooldown(provider: string, ms: number, db: Pick<pg.Pool, "query"> = pool): Promise<void> {
+  await db.query(
+    `INSERT INTO provider_cooldown (provider, until) VALUES ($1, now() + $2 * interval '1 millisecond')
+     ON CONFLICT (provider) DO UPDATE SET until = GREATEST(provider_cooldown.until, EXCLUDED.until)`,
+    [provider, ms],
+  );
+}
