@@ -26,7 +26,8 @@ sql() { docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POS
 out=$(docker compose up -d --build --wait --scale worker=1 2>&1) || fail "compose up failed:\n$out"
 curl -sf -X POST localhost:9001/reset >/dev/null
 input=$(node -e 'console.log(JSON.stringify({ sources: Array.from({ length: +process.argv[1] }, (_, i) => `source ${i}`) }))' "$SOURCES")
-id=$(sql "INSERT INTO tasks (goal, input) VALUES ('chaos kill loop', '$input') RETURNING task_id" | head -1)
+# max_steps = the task's real size: SOURCES summaries + 1 report (the default 200 is too small at 200 sources)
+id=$(sql "INSERT INTO tasks (goal, input, max_steps) VALUES ('chaos kill loop', '$input', $((SOURCES + 1))) RETURNING task_id" | head -1)
 echo "task $id: $SOURCES sources ($((SOURCES + 1)) LLM steps), $KILLS kills planned, LLM latency ${FAKE_LLM_LATENCY_MS} ms"
 
 kills=0
