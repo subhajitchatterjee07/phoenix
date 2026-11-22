@@ -2,7 +2,8 @@ import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { createLlm } from "../src/tools/llm.js";
 import { workOnce } from "../src/worker.js";
-import { Fenced, type StepContext } from "../src/step.js";
+import { claim } from "../src/queries.js";
+import { Fenced, Suspend, type StepContext } from "../src/step.js";
 import { runTask, type Task } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
 import { seedTask } from "../testing/seed.js";
@@ -34,7 +35,7 @@ it("takes a seeded task to DONE, then finds nothing left", async () => {
   expect(await workOnce(db, run)).toBeNull();
 });
 
-it("marks the task FAILED with the reason when the workflow throws (phase 1 only)", async () => {
+it("the workflow's verdict (invalid input: a retry can't fix it) ends the task FAILED with the reason", async () => {
   const id = await seedTask(db, "goal", { sources: [] });
   await workOnce(db, run);
   expect(await statusOf(id)).toMatchObject({ status: "FAILED", failure_reason: expect.stringMatching(/sources/) });
@@ -46,21 +47,47 @@ it("drops a task on Fenced: no FAILED, status left as the other worker sets it (
   expect(await statusOf(id)).toMatchObject({ status: "RUNNING", failure_reason: null });
 });
 
-it("two workers on one task (naive claim): step() limits the waste to the first colliding step", async () => {
+it("two workers start together on one task: one claims it, the other finds nothing; each step paid once", async () => {
   const id = await seedTask(db, "goal", sources);
-  // The SELECT→UPDATE gap is ~1 ms (collisions are luck); widen it to 50 ms so they always happen.
-  const slowDb = { query: async (text: string, params?: unknown[]) => {
-    if (text.includes("'RUNNING'")) await new Promise((r) => setTimeout(r, 50));
-    return db.query(text, params);
-  } } as Pick<pg.Pool, "query">;
-  expect(await Promise.all([workOnce(slowDb, run), workOnce(slowDb, run)])).toEqual([id, id]);
-  // The slower worker replays already-saved steps for free until it catches up, then both pay
-  // for ONE step; the slower save is Fenced and that worker drops the task. Which step collides
-  // depends on timing. Total: 4 or 5 calls (phase 1: 8). The atomic claim (PHX-036) makes it 4.
-  const calls = Object.values((await fake.inject({ url: "/stats" })).json() as Record<string, number>);
-  expect(calls).toHaveLength(4);
-  expect(Math.max(...calls)).toBeLessThanOrEqual(2);
-  expect(calls.reduce((a, b) => a + b)).toBeLessThanOrEqual(5);
-  // The loser dropped the task (design rule 5) instead of marking it FAILED.
-  expect(await statusOf(id)).toMatchObject({ status: "DONE", failure_reason: null });
+  expect((await Promise.all([workOnce(db, run), workOnce(db, run)])).sort()).toEqual([id, null]);
+  expect((await fake.inject({ url: "/stats" })).json()).toEqual(Object.fromEntries([1, 2, 3, 4].map((s) => [`${id}:${s}`, 1])));
+  expect(await statusOf(id)).toMatchObject({ status: "DONE", owner: null, lease_expires_at: null, fencing_token: 1 });
+});
+
+it.each([
+  ["max_steps = 2", "max_steps = 2", /step limit 2 reached/],
+  ["a token budget of 1", "token_budget = 1", /token budget 1 used up/],
+])("a task over its limit (%s) ends FAILED with the reason", async (_, limit, reason) => {
+  const id = await seedTask(db, "goal", sources);
+  await db.query(`UPDATE tasks SET ${limit}`);
+  await workOnce(db, run);
+  expect(await statusOf(id)).toMatchObject({ status: "FAILED", failure_reason: expect.stringMatching(reason), owner: null });
+});
+
+it("DONE is guarded: if another worker took the task meanwhile, mine is not written", async () => {
+  const id = await seedTask(db, "goal", sources);
+  await workOnce(db, async () => (await db.query("UPDATE tasks SET fencing_token = fencing_token + 1"), "report"));
+  expect(await statusOf(id)).toMatchObject({ status: "RUNNING", fencing_token: 2 });
+});
+
+it.each([
+  ["an unexpected error (a bug, the DB down)", new Error("socket hang up")],
+  ["Suspend (paused for approval)", new Suspend("waiting for a decision")],
+])("%s is not a failure: the task is left as it is, and another worker can take it once the lease expires", async (_, err) => {
+  const id = await seedTask(db, "goal", sources);
+  await workOnce(db, async () => { throw err; });
+  expect(await statusOf(id)).toMatchObject({ status: "RUNNING", failure_reason: null });
+  await db.query("UPDATE tasks SET lease_expires_at = now()"); // fast-forward the 30 s lease
+  expect(await claim("another worker", db)).toMatchObject({ taskId: id, token: 2 });
+});
+
+it("3 workers drain 10 tasks: every task DONE, every step paid once", async () => {
+  const ids = await Promise.all(Array.from({ length: 10 }, () => seedTask(db, "goal", sources)));
+  const drain = async () => { while ((await workOnce(db, run)) !== null); };
+  await Promise.all([drain(), drain(), drain()]);
+  const { rows } = await db.query("SELECT count(*)::int AS n FROM tasks WHERE status = 'DONE' AND fencing_token = 1");
+  expect(rows[0].n).toBe(10); // token 1: each task claimed exactly once
+  const calls = (await fake.inject({ url: "/stats" })).json() as Record<string, number>;
+  expect(Object.keys(calls)).toHaveLength(ids.length * 4);
+  expect(new Set(Object.values(calls))).toEqual(new Set([1]));
 });

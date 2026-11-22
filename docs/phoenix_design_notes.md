@@ -235,3 +235,91 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   back to PENDING) until phase 5. AT_LEAST_ONCE only: the dispatcher failpoint is on that
   path, and AT_MOST_ONCE ordering is proven by unit tests (PHX-033b). It failed as expected
   on an event committed before its outbox row, and on a dispatcher that changes the key.
+- H5 spike (PHX-035, 22 Nov 2026): a shared provider limit, retry and cost budgets. The
+  problem: the provider's limit is per API key, but each worker backs off on its own. Three
+  polite workers still add up, and 5 attempts per call multiply the load during an outage.
+  Under sustained overload, steps used up their attempts and were recorded as ERROR, so a
+  few minutes of outage did permanent damage. Decided:
+  1. **A shared cool-down**, not a token bucket. One row, `provider_cooldown('llm', until)`.
+     Any 429 or 5xx pushes `until` forward (Retry-After, else backoff, GREATEST so never
+     back), and every LLM attempt waits it out first. A token bucket would need one write
+     per call on a hot row, plus the provider's real limit to configure it. Deferred until
+     real limits matter.
+  2. **The cool-down is the retry budget.** While it holds, no worker calls the provider.
+  3. **A 429 doesn't use an attempt** (the provider did no work), but waiting is bounded by
+     `OVERLOAD_MAX_WAIT_MS` = 15 min per step. 5xx and timeouts still count toward the 5.
+     I first offered "waiting doesn't count" as enough. It wasn't: every real call during an
+     outage is a 429 and counted, so steps still failed after about 2.5 min. Corrected
+     before deciding.
+  4. **Cost:** per-task `token_budget` and `max_steps` only (P7, PHX-039). No global cap;
+     the provider-side spend limit on the API key is the outer guard.
+  Scope: LLM only; the dispatcher keeps per-row backoff (PHX-033). New tickets: PHX-066
+  (table + shared wait), PHX-067 (429s don't count, bounded wait).
+- Heartbeat (PHX-037, 22 Nov 2026). The LLD covered "renew returns 0 rows → abort" but not
+  a renew that throws. Decided: one failure isn't proof we lost the task (the 30 s lease
+  tolerates 2 missed beats), so log it and retry next beat. But after a full lease with no
+  successful renew, abort: another worker may own the task, and we'd keep paying for LLM
+  calls whose saves will be rejected. The timer is a chained `setTimeout` instead of the
+  sketch's `setInterval`, so a slow renew never overlaps the next. `stop()` also has to
+  handle a renew that is in flight when it's called (a flag, not just `clearTimeout`).
+- Phase 5 order and guard shape (PHX-038/040a, 22 Nov 2026). Guarded saves need a worker
+  that holds a real lease, but the worker only got `claim()` + heartbeat in PHX-040, two
+  tickets after the guards. Shipping the guards first would have rejected every save.
+  Decided: a new PHX-040a wires the claim + heartbeat into the worker first. The chaos
+  scripts now fast-forward lease expiry (`SET lease_expires_at = now()`) instead of setting
+  a task back to PENDING. Then PHX-038 guards the saves. Guard shape: the `tokens_used`
+  UPDATE at the top of `saveEvent`'s transaction becomes the guard (my token AND a live
+  lease AND RUNNING; 0 rows → ROLLBACK → `Fenced`). It also locks the task row until
+  COMMIT, so no claim can bump the token between the guard and the events/outbox inserts:
+  the same safety as LLD §5.4's `INSERT ... WHERE EXISTS`, with one check instead of two.
+- Limits and finish (PHX-039, 22 Nov 2026). The LLD had `step()` fail the task itself when
+  a limit was hit, and didn't say how it learns `tokens_used`. Decided: (1) the claim
+  returns `token_budget` and `tokens_used`; `ctx` carries them, and `step()` adds each newly
+  saved step's tokens. Only the owner adds tokens (guarded saves), so the count is exact
+  with no query per step. A step's cost is only known after it runs, so the budget can be
+  overshot by one step at most; the check is `used >= budget` before each new step.
+  (2) `step()` throws `LimitExceeded`; the worker writes the guarded FAILED with the reason.
+  All task-status writes stay in the worker, and a limit stays distinct from an unexpected
+  error (which PHX-040 leaves to lease expiry). DONE and FAILED are guarded by my token
+  (LLD §5.6); 0 rows means someone else owns the task now, so the worker writes nothing.
+- Worker error policy (PHX-040, 22 Nov 2026). The LLD said an unexpected error leaves the
+  task for lease expiry (another worker retries within 30 s). But the workflow also threw
+  plain errors for its own final verdicts (invalid input, "no source could be summarised",
+  a report or email recorded as failed). Those replay to the same error, so under the
+  literal rule they would cycle forever. Decided: a `TaskFailed` class for verdicts
+  (`LimitExceeded` extends it); the worker writes the guarded FAILED for those. Everything
+  else (bugs, the database down at the finish, NonDeterminism after a bad deploy) is logged
+  and left for a retry. A task that keeps hitting the same bug retries every ~30 s forever:
+  the poison-task gap, tracked as B-40 until phase 9 (DLQ).
+- Freeze and block-loop (PHX-041, 22 Nov 2026). The LLD said `kill -STOP` / `kill -CONT`.
+  Measured: our containers run with `init: true`, so `docker kill --signal STOP` stops only
+  PID 1 (docker-init, state `T`) while node keeps running (`Sl`). A freeze built that way
+  freezes nothing, and Chaos 5 would pass vacuously. `freeze.sh` uses `docker pause` (the
+  cgroup freezer stops every process). The "block the event loop" step is a vitest test,
+  not a step in the product (your call). A step busy-waits synchronously while a separate
+  child process claims the task; the busy loop ends when the child's marker file appears
+  (no timing guesses), and the blocked step's save must be `Fenced` with nothing written.
+- Chaos 5 (PHX-042, 22 Nov 2026), the phase 5 gate, with real leases (nothing
+  fast-forwarded). HLD P2 says takeover "within ~35 s", but by the design's own numbers
+  the worst case is lease 30 + poll 5 + jitter 1 = 36 s. The script asserts ≤ 38 s
+  (36 + 2 s for docker/psql), computed from those defaults, and prints the measured time.
+  It runs in CI. The task is about 61 s long (60 sources at 1 s), so when the frozen worker
+  wakes, the new owner is still RUNNING; that makes the fencing token, not the status
+  check, what rejects it.
+- Shared cool-down built (PHX-066, 22 Nov 2026), as decided in H5 (D-30). The opt-in is per
+  step, `step(..., { provider: "llm" })`, so built-in steps (`now`, `random`) never touch
+  the table. Before every attempt, `runWithRetries` waits out the provider's cool-down.
+  On a 429 or 5xx it pushes the cool-down forward (Retry-After, else backoff) instead of
+  sleeping alone; the next pass waits it out with everyone else. `TransientError` now
+  carries the HTTP status, so a timeout or connection error (which may be only this
+  worker's network) does NOT pause every worker. Chaos 3 still passes: 108 LLM calls vs
+  119–123 before, 19 steps retried vs 26–30. Still to come in PHX-067: 429s don't use an
+  attempt, bounded by `OVERLOAD_MAX_WAIT_MS`.
+- 429s are free (PHX-067, 22 Nov 2026), the rest of H5 (D-30). In `runWithRetries` a 429
+  doesn't use one of the 5 attempts. The backoff exponent still grows through a streak of
+  429s (a separate failure counter), so the provider isn't hammered every 0.5 s. The bound
+  is the clock since the step's first 429 (cool-down waits included): at
+  `OVERLOAD_MAX_WAIT_MS` (15 min) the step ends as PermanentError "provider overloaded for
+  N min". This supersedes D-24's Chaos 3 rule: with only 429s injected nothing can give up
+  any more, so the gate is now strict (every task DONE, no ERROR rows), and "retries
+  happened" means a step made more calls than its saved attempts.

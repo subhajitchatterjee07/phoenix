@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { config } from "./config.js";
-import { loadEvent, saveEvent, type OutboxRow } from "./queries.js";
+import { cooldownRemainingMs, extendCooldown, loadEvent, saveEvent, type OutboxRow } from "./queries.js";
 
 /**
  * JSON text that is identical for equal values: object keys sorted at every level,
@@ -44,6 +44,8 @@ export interface StepContext {
   nextStepId: number; // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal; // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  tokenBudget?: number | null; // from the claim; null or absent = unlimited (HLD P7)
+  tokensUsed?: number; // from the claim, then + each newly saved step's tokens
   db?: pg.Pool; // tests only: a throwaway database; defaults to the process pool
 }
 
@@ -53,20 +55,22 @@ export type StepResult<T> = { ok: true; value: T } | { ok: false; error: string 
 export class Suspend extends Error { override name = "Suspend"; } // task paused (approval): stop executing
 export class Fenced extends Error { override name = "Fenced"; } // my write was rejected: drop the task
 export class NonDeterminism extends Error { override name = "NonDeterminism"; } // saved step replayed with other args
+export class TaskFailed extends Error { override name = "TaskFailed"; } // the workflow's final verdict: the worker FAILs the task
+export class LimitExceeded extends TaskFailed { override name = "LimitExceeded"; } // step limit / token budget (HLD P7)
 export class PermanentError extends Error {
   override name = "PermanentError";
   attempts = 1; // set by runWithRetries, saved as events.attempts
 }
 export class TransientError extends Error {
   override name = "TransientError";
-  constructor(message: string, public readonly retryAfterMs?: number) {
+  constructor(message: string, public readonly retryAfterMs?: number, public readonly status?: number) {
     super(message);
   }
 }
 
 /** LLD §4.3 for any HTTP status: 429, 408 and 5xx are worth retrying; any other 4xx is not. */
 export function classifyHttp(status: number, message: string, retryAfter?: string | null): TransientError | PermanentError {
-  if (status === 429 || status === 408 || status >= 500) return new TransientError(message, retryAfterMs(retryAfter));
+  if (status === 429 || status === 408 || status >= 500) return new TransientError(message, retryAfterMs(retryAfter), status);
   return new PermanentError(message);
 }
 
@@ -80,29 +84,56 @@ function retryAfterMs(value: string | null | undefined): number | undefined {
 }
 
 // ---- Retries inside a step (LLD §4.3) ----
-export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number };
+export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number; overloadMaxWaitMs?: number };
+/** H5: a provider whose limit is shared by every worker (LLD §4.3), and where its cool-down lives. */
+export type Cooldown = { provider: string; db?: Pick<pg.Pool, "query"> | undefined };
 const policyFromConfig = (): RetryPolicy =>
-  ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS });
+  ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS,
+     overloadMaxWaitMs: config.OVERLOAD_MAX_WAIT_MS });
 
 /**
  * Calls `attempt` until it succeeds. Only TransientError is retried (on the last attempt it becomes
  * PermanentError); anything else passes through. Returns the result and the attempt count.
+ * A 429 doesn't use an attempt (H5: the provider did no work), but 429s for longer than
+ * overloadMaxWaitMs since the first one end the step as PermanentError ("provider overloaded").
  */
 export async function runWithRetries<T>(
   attempt: () => Promise<T>,
   signal: AbortSignal,
   policy: RetryPolicy = policyFromConfig(),
+  cooldown?: Cooldown,
 ): Promise<{ result: T; attempts: number }> {
-  for (let n = 1; ; n++) {
+  let n = 1; // attempts that count: a 429 doesn't
+  let failures = 0; // every failure, 429s too: the backoff keeps growing through a streak of 429s
+  let firstRateLimitAt: number | undefined;
+  for (;;) {
+    // H5: wait out the provider's shared cool-down first. Waiting never counts as an attempt.
+    if (cooldown) await sleep(await cooldownRemainingMs(cooldown.provider, cooldown.db), signal);
     try {
       return { result: await attempt(), attempts: n };
     } catch (err) {
       if (err instanceof PermanentError) err.attempts = n;
       if (!(err instanceof TransientError)) throw err;
-      if (n >= policy.maxAttempts) {
-        throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
+      failures++;
+      if (err.status === 429) {
+        firstRateLimitAt ??= Date.now();
+        const overloadMs = Date.now() - firstRateLimitAt;
+        if (overloadMs >= (policy.overloadMaxWaitMs ?? Infinity)) {
+          const min = (overloadMs / 60_000).toFixed(1);
+          throw Object.assign(new PermanentError(`provider overloaded for ${min} min: ${err.message}`, { cause: err }), { attempts: n });
+        }
+      } else {
+        if (n >= policy.maxAttempts) {
+          throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
+        }
+        n++;
       }
-      await sleep(backoffMs(n, err.retryAfterMs, policy), signal);
+      const waitMs = backoffMs(failures, err.retryAfterMs, policy);
+      // The provider is overloaded (429 / 5xx): make EVERY worker wait, not just me. The next
+      // pass waits it out at the top of the loop; GREATEST keeps it at least waitMs.
+      const overloaded = err.status === 429 || (err.status ?? 0) >= 500;
+      if (cooldown && overloaded) await extendCooldown(cooldown.provider, waitMs, cooldown.db);
+      else await sleep(waitMs, signal);
     }
   }
 }
@@ -138,7 +169,10 @@ export type StepOutput<T> = { value: T; tokens?: number };
 /** What a step function is told: its id (e.g. for the X-Phoenix-Step header) and the abort signal. */
 export type StepMeta = { stepId: number; signal: AbortSignal };
 /** A side-effect step names the outbox row its value produces; saved in the events transaction (§5.5). */
-export type StepOptions<T> = { outbox?: (value: T) => OutboxRow };
+export type StepOptions<T> = {
+  outbox?: (value: T) => OutboxRow;
+  provider?: string; // H5: share this provider's cool-down with every worker (e.g. "llm")
+};
 
 export async function step<A, T>(
   ctx: StepContext,
@@ -162,8 +196,14 @@ export async function step<A, T>(
     return saved.status === "OK" ? { ok: true, value: saved.result as T } : { ok: false, error: saved.error ?? "" };
   }
 
-  // 2. A fenced worker starts no new work. Step limit and token budget: PHX-039.
+  // 2. A fenced worker starts no new work, and no task runs past its limits (HLD P7). A step's
+  //    cost is only known after it runs, so the budget can be overshot by one step at most.
   if (ctx.signal.aborted) throw new Fenced(`task ${ctx.taskId} step ${stepId}: lease lost, not running ${type}`);
+  if (stepId > ctx.maxSteps) throw new LimitExceeded(`step limit ${ctx.maxSteps} reached (next: ${type})`);
+  const used = ctx.tokensUsed ?? 0;
+  if (ctx.tokenBudget != null && used >= ctx.tokenBudget) {
+    throw new LimitExceeded(`token budget ${ctx.tokenBudget} used up (${used} tokens) before step ${stepId}`);
+  }
 
   // 3. Run, retrying transient failures (LLD §4.3). A permanent failure is an OUTCOME: it is
   //    saved as an ERROR row below and replayed as-is. Anything else (Fenced, a bug) propagates
@@ -172,7 +212,8 @@ export async function step<A, T>(
   let attempts: number;
   let tokens = 0;
   try {
-    const run = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal);
+    const cooldown = options.provider ? { provider: options.provider, db: ctx.db } : undefined;
+    const run = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal, undefined, cooldown);
     // Return exactly what a replay will return (JSON), and reject values JSON would change.
     outcome = { ok: true, value: JSON.parse(canonicalJson(run.result.value)) as T };
     ({ attempts } = run);
@@ -183,11 +224,12 @@ export async function step<A, T>(
     attempts = err.attempts;
   }
 
-  // 4. Save, with the outbox row if this step has a side effect and succeeded. Unguarded until PHX-038 (my fencing token AND a live lease). Until then, a
-  //    duplicate key means another worker saved this step first: we lost, so drop the task
-  //    (design rule 5), exactly as a rejected guarded write will.
+  // 4. Save, guarded (§5.4), with the outbox row if this step has a side effect and succeeded.
+  //    The task is no longer mine (stale token, lease gone): nothing was written, so drop the
+  //    task (design rule 5). A duplicate key is the same verdict: someone saved this step first.
+  let written: boolean;
   try {
-    await saveEvent(
+    written = await saveEvent(
       { taskId: ctx.taskId, stepId, stepType: type, inputHash: hash, status: outcome.ok ? "OK" : "ERROR", result: outcome.ok ? outcome.value : undefined, error: outcome.ok ? null : outcome.error, attempts, tokens, fencingToken: ctx.token,
         outbox: outcome.ok && options.outbox ? options.outbox(outcome.value) : undefined },
       ctx.db,
@@ -196,6 +238,8 @@ export async function step<A, T>(
     if ((err as { code?: string }).code !== "23505") throw err;
     throw new Fenced(`task ${ctx.taskId} step ${stepId}: another worker already saved it`, { cause: err });
   }
+  if (!written) throw new Fenced(`task ${ctx.taskId} step ${stepId}: not mine any more (token ${ctx.token}), nothing saved`);
+  ctx.tokensUsed = used + tokens;
   return outcome;
 }
 

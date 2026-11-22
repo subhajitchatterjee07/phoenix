@@ -18,6 +18,13 @@ export async function seedTask(db: pg.ClientBase | pg.Pool, goal: string, input:
   return taskId;
 }
 
+/** TESTS ONLY: a task as if a worker with token 0 had just claimed it (1 h lease), so steps can save. */
+export async function seedRunningTask(db: pg.Pool, goal: string, input: unknown = {}): Promise<number> {
+  const taskId = await seedTask(db, goal, input);
+  await db.query("UPDATE tasks SET status = 'RUNNING', owner = 'test', lease_expires_at = now() + interval '1 hour' WHERE task_id = $1", [taskId]);
+  return taskId;
+}
+
 // CLI entry: npm run seed -- "Summarise pricing for Acme" [--input '{"schools":["A","B"]}']
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: { input: { type: "string" } } });

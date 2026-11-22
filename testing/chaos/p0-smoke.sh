@@ -15,9 +15,9 @@ done
 
 tables=$(docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
   "SELECT string_agg(tablename, \$\$,\$\$ ORDER BY tablename) FROM pg_tables WHERE schemaname = \$\$public\$\$"')
-[ "$tables" = "decisions,events,outbox,schema_migrations,tasks" ] || fail "unexpected tables: $tables"
+[ "$tables" = "decisions,events,outbox,provider_cooldown,schema_migrations,tasks" ] || fail "unexpected tables: $tables"
 
 [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/)" = "404" ] || fail "api not answering on 8000"
 curl -sf localhost:9001/stats >/dev/null || fail "fake-llm not answering on 9001"
 
-echo "PASS: phase 0 (migrate exit 0, 3 workers, api, dispatcher, fake-llm, fake-email up, 5 tables)"
+echo "PASS: phase 0 (migrate exit 0, 3 workers, api, dispatcher, fake-llm, fake-email up, 6 tables)"

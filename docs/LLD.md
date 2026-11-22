@@ -109,6 +109,12 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_due ON outbox (next_attempt_at) WHERE status = 'PENDING';
 
+-- H5: one row per external provider; every worker waits until `until` before calling it.
+CREATE TABLE provider_cooldown (
+  provider  TEXT        PRIMARY KEY,         -- 'llm' (the dispatcher keeps per-row backoff)
+  until     TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE decisions (
   task_id     BIGINT      NOT NULL REFERENCES tasks,
   step_id     INT         NOT NULL,          -- the request_approval step
@@ -182,6 +188,8 @@ interface StepContext {
   nextStepId: number;         // starts at 1; +1 on every step() call, in call order
   signal: AbortSignal;        // aborted by the heartbeat if a renew returns 0 rows
   maxSteps: number;
+  tokenBudget?: number | null; // from the claim; null = unlimited
+  tokensUsed?: number;        // from the claim, + each newly saved step's tokens (one owner: exact)
   db?: pg.Pool;               // tests only: a throwaway database; defaults to the process pool
 }
 
@@ -193,6 +201,7 @@ type StepMeta = { stepId: number; signal: AbortSignal };  // told to fn: header 
 class Suspend extends Error {}        // task paused (approval): stop executing
 class Fenced extends Error {}         // my write was rejected: drop the task
 class NonDeterminism extends Error {} // saved step replayed with different args
+class LimitExceeded extends Error {}  // max_steps / token_budget reached: the worker FAILs the task
 class PermanentError extends Error {}
 class TransientError extends Error { constructor(msg: string, public retryAfterMs?: number) { super(msg) } }
 ```
@@ -208,7 +217,8 @@ inputHash = sha256(canonicalJson({ type, args }))
        return row as StepResult        // saved value or saved error
 
 2. if ctx.signal.aborted: throw Fenced
-   if stepId > ctx.maxSteps or budget exceeded: fail task (§5.6), throw Fenced
+   if stepId > ctx.maxSteps or ctx.tokensUsed >= ctx.tokenBudget: throw LimitExceeded
+       (the worker writes the guarded FAILED with that reason, §5.6; D-33)
 
 3. result = await runWithRetries(fn, args, ctx.signal)      // §4.3
 
@@ -237,6 +247,23 @@ max 5 attempts. `Math.random()` here only affects timing, not results or branche
 `Retry-After` replaces the backoff for that wait but is capped at `BACKOFF_CAP_MS` (30 s), so one
 step never stalls a task for long; a wait is cut short by an aborted signal (→ `Fenced`).
 `step()` saves the attempt count in `events.attempts`.
+
+**Shared cool-down (H5).** The provider's limit is per API key, not per worker, so three
+workers each backing off politely still add up. Before every LLM attempt, `runWithRetries`
+waits until `provider_cooldown.until` for `'llm'` (one indexed read; abortable → `Fenced`).
+On a 429 or 5xx it pushes the cool-down forward, never back:
+```sql
+INSERT INTO provider_cooldown (provider, until) VALUES ('llm', now() + $ms * interval '1 millisecond')
+ON CONFLICT (provider) DO UPDATE SET until = GREATEST(provider_cooldown.until, EXCLUDED.until);
+```
+with `$ms` = `Retry-After` (capped) or `backoffMs(n)`. All times are the database's clock.
+- **A 429 does not use an attempt:** the provider did no work and said "later". 5xx, 408 and
+  timeouts still count toward the 5. Waiting never counts.
+- **Bounded:** if a step has spent more than `OVERLOAD_MAX_WAIT_MS` (15 min) waiting on 429s,
+  it gives up as a permanent failure ("provider overloaded for N min"), recorded as ERROR.
+- **Retry budget:** the shared cool-down is the budget. While it holds, no worker sends
+  anything, so retries can't pile onto an overloaded provider.
+- The heartbeat keeps renewing the lease while a step waits (§5.3).
 Pass `ctx.signal` to `fetch` and to the LLM/MCP clients so a fenced worker stops waiting.
 Classification happens at each tool's boundary: `classifyHttp(status, message, retryAfter)` in
 `step.ts` (seconds or HTTP-date `Retry-After`); `tools/llm.ts` maps the `openai` client's errors.
@@ -279,12 +306,13 @@ while (true) {
   task = await claim()                                   // 5.2
   if (!task) { await sleep(5000 ± 1000); continue }
   controller = new AbortController()
-  hb = setInterval(renew → on 0 rows: controller.abort(), 10_000)   // 5.3
+  stop = startHeartbeat(task, controller)   // 5.3: renew every 10 s; abort on 0 rows or a full lease without a renew
   try   { await runTask(ctx); await markDone() }         // 5.6
   catch (e) {
     if (e instanceof Suspend) {}                         // already paused
     else if (e instanceof Fenced) log("fenced off", taskId)
-    else throw-or-log (unexpected: leave task; lease expiry hands it to another worker)
+    else if (e instanceof TaskFailed) markFailed(e)     // the workflow's verdict; LimitExceeded is one (D-34)
+    else log (unexpected: leave task; lease expiry hands it to another worker)
   } finally { clearInterval(hb) }
 }
 ```
@@ -303,9 +331,13 @@ WHERE task_id = (
   LIMIT 1
   FOR UPDATE SKIP LOCKED
 )
-RETURNING task_id, fencing_token, goal, max_steps;
+RETURNING task_id, fencing_token, goal, input, max_steps;
 ```
 Note `lease_expires_at IS NULL`: PENDING tasks have no lease, and `NULL < now()` is not true.
+Implemented as `claim(me)` in `queries.ts` (PHX-036): the interval is `LEASE_SECONDS`, and
+`input` is returned too (the workflow needs it). Without `SKIP LOCKED` a claimer waits for
+the in-flight claim to commit, then moves on: correct but serialized. Without `FOR UPDATE`
+at all, two claimers can both win the same task.
 
 ### 5.3 Renew
 ```sql
@@ -313,6 +345,12 @@ UPDATE tasks SET lease_expires_at = now() + interval '30 seconds'
 WHERE task_id = $id AND fencing_token = $tok AND status = 'RUNNING';
 -- 0 rows → I no longer own it → abort
 ```
+Heartbeat (`startHeartbeat` in `heartbeat.ts`, PHX-037): every `HEARTBEAT_MS`, each renew
+scheduled only after the previous one finished (chained `setTimeout`, never two in flight).
+- 0 rows: abort with `Fenced`, at once.
+- The renew throws (database unreachable, blip): log it and try again next beat. A full
+  `LEASE_SECONDS` without one successful renew (our clock): abort, since another worker may
+  own the task by now and our steps' saves would be rejected (PHX-038) anyway (D-31).
 
 ### 5.4 Guarded save (normal step)
 ```sql
@@ -325,6 +363,13 @@ WHERE EXISTS (SELECT 1 FROM tasks
 -- rowCount 0 → throw Fenced
 ```
 Same transaction: `UPDATE tasks SET tokens_used = tokens_used + $tokens WHERE ... (guarded)`.
+
+As built (PHX-038, D-32): the guarded `tokens_used` UPDATE runs **first** in `saveEvent`'s
+transaction and is the guard for the whole save. It checks `fencing_token = $tok AND
+lease_expires_at > now() AND status = 'RUNNING'`; on 0 rows → ROLLBACK, `saveEvent` returns
+false, `step()` throws `Fenced`. The UPDATE row-locks the task until COMMIT, so a concurrent
+claim (which must UPDATE the same row) waits, and the token can't change between the guard and
+the events/outbox inserts. That is why the check sits in a write that locks, not in a read before it.
 
 ### 5.5 Guarded save (side-effect step): one transaction
 ```
@@ -475,6 +520,7 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `STEP_MAX_ATTEMPTS` | 5 |
 | `BACKOFF_BASE_MS` / `BACKOFF_CAP_MS` | 1000 / 30000 |
 | `OUTBOX_MAX_ATTEMPTS` | 8 |
+| `OVERLOAD_MAX_WAIT_MS` | 900000 (15 min): how long one step may wait on 429s before giving up (H5) |
 | `DEFAULT_MAX_STEPS` | 200 |
 | `INLINE_RESULT_MAX_BYTES` | 65536 |
 | `LLM_TIMEOUT_MS` | 60000 |
@@ -495,14 +541,15 @@ Every value is an environment variable of the same name, validated at boot by `s
 | `failpoint(name)` (`src/failpoint.ts`) | If `CRASH_AT` equals `name`, the process SIGKILLs itself there (a real `kill -9`: no finally, no exit handlers). Points: `between_event_and_outbox`, `after_outbox_commit` (PHX-031), `after_send_before_sent` (PHX-032). The chaos script makes it fire once: start with `CRASH_AT`, wait for exit 137, restart without it |
 | `chaos/kill.sh` | `kill -9` a random worker at a random time |
 | `chaos/kill-loop.sh` | `npm run chaos:kill -- KILLS SOURCES`: one long task, kill + restart the worker KILLS times, wait for DONE, print LLM calls per step. Until leases (phase 5) it simulates lease expiry by setting the task back to PENDING |
-| `chaos/freeze.sh` | `kill -STOP` a worker for N s, then `kill -CONT` |
-| `chaos/block-loop` | A test step that blocks the event loop for 40 s (reproduces §4.4) |
-| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Chaos 3 (`chaos/p3-ratelimit.sh`, 30% 429s): no task stuck; DONE, or FAILED only by a 5-attempt give-up; every ERROR row is such a give-up; some OK step has attempts > 1; per step, LLM calls ≥ saved attempts. Chaos 4 (`chaos/p4-outbox.sh`): crash at each failpoint (worker: `between_event_and_outbox` leaves no rows, `after_outbox_commit` leaves event + 1 outbox row; dispatcher: `after_send_before_sent`); then all tasks DONE, one outbox row per task, all SENT, provider keys = outbox keys, each delivered once, ≥ 1 resent and deduped. Takeover ≤ 35 s (phase 5) |
+| `chaos/freeze.sh` | `npm run chaos:freeze -- SECONDS [CONTAINER]`: freeze a worker (default: a random one) for N s, then thaw it. Uses `docker pause` (cgroup freezer): with `init: true`, `SIGSTOP` stops only docker-init while node keeps running (D-35) |
+| `tests/block-loop.test.ts` | Reproduces §4.4 in-process: a step busy-waits synchronously while another process takes the task over; the blocked step's save is rejected (`Fenced`) (D-35) |
+| Assertions | Chaos 2: task DONE with every step saved; every step called ≥ 1; extra LLM calls ≤ kills (only the step in flight at a crash may repeat). Chaos 3 (`chaos/p3-ratelimit.sh`, 30% 429s; since PHX-067 a 429 doesn't use an attempt): every task DONE, no ERROR rows; per step, LLM calls ≥ saved attempts, and some step made more calls than attempts (429s retried without counting). Chaos 4 (`chaos/p4-outbox.sh`): crash at each failpoint (worker: `between_event_and_outbox` leaves no rows, `after_outbox_commit` leaves event + 1 outbox row; dispatcher: `after_send_before_sent`); then all tasks DONE, one outbox row per task, all SENT, provider keys = outbox keys, each delivered once, ≥ 1 resent and deduped. Chaos 5 (`chaos/p5-leases.sh`, real leases): `kill -9` the owner mid-task, and separately freeze it 60 s; each time another worker takes over within 38 s (lease 30 + poll 5 + jitter 1 + 2 s slack, D-36), the task ends DONE with every step saved and ≤ 1 extra LLM call; the woken frozen worker is fenced, and no event carries its old token after the new owner's first event |
 
 ---
 
 ## 11. Open (to design later)
-- H5: shared rate limiter for the LLM provider across workers (token bucket in Postgres), retry budgets.
+- ~~H5~~: decided 22 Nov 2026, a shared cool-down (§4.3). A token bucket (a hard requests-per-minute
+  cap) is the next step if real provider limits need it; a global daily cost cap likewise.
 - L5: `workflow_version` pinned on `tasks` at creation; workers run the matching code version.
 - L5: structured logs with `taskId`, `stepId`, `fencingToken`; traces across takeovers;
   alerts for RUNNING tasks without progress and PENDING outbox rows older than N minutes.

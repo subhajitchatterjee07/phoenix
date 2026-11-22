@@ -53,3 +53,24 @@ it("an abort during the wait ends it at once with Fenced; no further attempt", a
   expect(await p).toBeInstanceOf(Fenced);
   expect(calledAt).toHaveLength(1);
 });
+
+// H5 (PHX-067): a 429 means the provider did no work, so it doesn't use one of the 5 attempts.
+const r429 = () => new TransientError("429", undefined, 429);
+const many429 = (n: number) => Array.from({ length: n }, r429);
+
+it("ten 429s then OK: attempts = 1 (11 calls), and the backoff still grows through the streak", async () => {
+  expect(await run(runWithRetries(failing(...many429(10)), new AbortController().signal, policy))).toEqual({ result: "ok", attempts: 1 });
+  expect(calledAt).toHaveLength(11);
+  expect(gaps().slice(0, 6)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000]);
+});
+
+it("a 503 still uses an attempt: 429, 503, 429, 503, OK is attempts = 3", async () => {
+  expect(await run(runWithRetries(failing(r429(), t(), r429(), t()), new AbortController().signal, policy))).toEqual({ result: "ok", attempts: 3 });
+});
+
+it("429s for overloadMaxWaitMs since the first one: PermanentError 'provider overloaded', attempts 1", async () => {
+  const err = await run(runWithRetries(failing(...many429(100)), new AbortController().signal, { ...policy, overloadMaxWaitMs: 60_000 }));
+  expect(err).toBeInstanceOf(PermanentError);
+  expect(err).toMatchObject({ message: expect.stringMatching(/^provider overloaded for 1\.0 min: 429$/), attempts: 1 });
+  expect(calledAt).toHaveLength(7); // waits 1 + 2 + 4 + 8 + 16 + 30 = 61 s ≥ 60 s at the 7th 429
+});

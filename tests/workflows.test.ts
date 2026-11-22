@@ -1,10 +1,10 @@
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import { inputHash, PermanentError, type StepContext } from "../src/step.js";
+import { classifyHttp, inputHash, PermanentError, type StepContext } from "../src/step.js";
 import { createLlm } from "../src/tools/llm.js";
 import { runTask } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
-import { seedTask } from "../testing/seed.js";
+import { seedRunningTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
 const fake = buildFakeLlm();
@@ -25,7 +25,7 @@ beforeAll(async () => {
 });
 afterAll(() => Promise.all([fake.close(), drop()]));
 beforeEach(async () => {
-  t = { ...task, taskId: await seedTask(db, task.goal, task.input) };
+  t = { ...task, taskId: await seedRunningTask(db, task.goal, task.input) };
   await fake.inject({ method: "POST", url: "/reset" });
 });
 
@@ -66,7 +66,7 @@ it("fails the task when no source could be summarised", async () => {
 
 it("with input.email, step 5 writes the email and queues ONE outbox row; a re-run queues nothing new", async () => {
   const input = { ...task.input, email: { to: "boss@example.com", guarantee: "AT_LEAST_ONCE" } };
-  t = { ...task, input, taskId: await seedTask(db, task.goal, input) };
+  t = { ...task, input, taskId: await seedRunningTask(db, task.goal, input) };
   const report = await runTask(ctx(), t, llm);
   expect(await runTask(ctx(), t, llm)).toBe(report); // the restart replays all 5 steps
   expect(await stats()).toEqual(perStep([1, 1, 1, 1, 1]));
@@ -74,4 +74,11 @@ it("with input.email, step 5 writes the email and queues ONE outbox row; a re-ru
   const { rows } = await db.query("SELECT step_id, recipient, guarantee, payload, status FROM outbox WHERE task_id = $1", [t.taskId]);
   expect(rows).toEqual([{ step_id: 5, recipient: "boss@example.com", guarantee: "AT_LEAST_ONCE",
     payload: { subject: task.goal, body: body.result_inline }, status: "PENDING" }]);
+});
+
+it("every LLM step shares the provider cool-down: one 429 makes a provider_cooldown row", async () => {
+  let first = true;
+  const rateLimitedOnce: typeof llm = { chat: (m, c) => (first ? ((first = false), Promise.reject(classifyHttp(429, "slow down", "0.05"))) : llm.chat(m, c)) };
+  await runTask(ctx(), t, rateLimitedOnce);
+  expect((await db.query("SELECT provider FROM provider_cooldown")).rows).toEqual([{ provider: "llm" }]);
 });

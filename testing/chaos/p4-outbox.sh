@@ -9,7 +9,7 @@
 #      dispatcher resends with the SAME key and the provider dedupes it
 # Pass: all tasks DONE; one outbox row per task, all SENT; the fake's keys are exactly the
 # outbox keys, each delivered once; at least one key was requested twice (crash 4 resent it).
-# SIMULATED LEASE EXPIRY as in kill-loop.sh: after a worker crash, RUNNING goes back to PENDING.
+# FAST-FORWARDED LEASE EXPIRY as in kill-loop.sh: after a worker crash, its lease is expired at once.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 TASKS=${1:-5}
@@ -38,13 +38,14 @@ crash worker between_event_and_outbox
 t=$(sql "SELECT task_id FROM tasks WHERE $mine AND status = 'RUNNING'")
 [ "$(sql "SELECT count(*) FROM outbox WHERE task_id = $t")" = 0 ] || fail "crash 1: task $t has an outbox row"
 [ "$(sql "SELECT count(*) FROM events WHERE task_id = $t AND step_type = 'send_email'")" = 0 ] || fail "crash 1: send_email event survived"
-sql "UPDATE tasks SET status = 'PENDING', owner = NULL WHERE $mine AND status = 'RUNNING'" >/dev/null
+sql "UPDATE tasks SET lease_expires_at = now() WHERE $mine AND status = 'RUNNING'" >/dev/null
 echo "crash 1 (between_event_and_outbox), task $t: no event, no outbox row"
 
 crash worker after_outbox_commit
-t=$(sql "SELECT task_id FROM tasks WHERE $mine AND status = 'RUNNING'")
+# Crash 1's task is RUNNING too (its lease expired above): crash 2's is the one with a live lease.
+t=$(sql "SELECT task_id FROM tasks WHERE $mine AND status = 'RUNNING' AND lease_expires_at > now()")
 [ "$(sql "SELECT count(*) FROM outbox WHERE task_id = $t")" = 1 ] || fail "crash 2: task $t should have exactly 1 outbox row"
-sql "UPDATE tasks SET status = 'PENDING', owner = NULL WHERE $mine AND status = 'RUNNING'" >/dev/null
+sql "UPDATE tasks SET lease_expires_at = now() WHERE $mine AND status = 'RUNNING'" >/dev/null
 echo "crash 2 (after_outbox_commit), task $t: event + 1 outbox row"
 
 docker compose up -d --no-deps --scale worker=3 worker >/dev/null 2>&1

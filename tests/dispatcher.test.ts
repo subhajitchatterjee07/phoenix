@@ -7,7 +7,7 @@ import { saveEvent } from "../src/queries.js";
 import { PermanentError, TransientError } from "../src/step.js";
 import { createEmail } from "../src/tools/email.js";
 import { buildFakeEmail } from "../testing/fake-email.js";
-import { seedTask } from "../testing/seed.js";
+import { seedRunningTask } from "../testing/seed.js";
 import { createTestDb } from "../testing/test-db.js";
 
 const fake = buildFakeEmail();
@@ -27,7 +27,7 @@ beforeAll(async () => {
   fakeUrl = await fake.listen({ host: "127.0.0.1", port: 0 });
   email = createEmail({ baseURL: fakeUrl, timeoutMs: 5_000 });
   ({ pool: db, drop } = await createTestDb("dispatcher"));
-  taskId = await seedTask(db, "goal");
+  taskId = await seedRunningTask(db, "goal");
 });
 afterAll(() => Promise.all([fake.close(), drop()]));
 beforeEach(async () => {
