@@ -28,6 +28,7 @@ const ConfigSchema = z.object({
   BACKOFF_BASE_MS: positiveInt().default(1_000),
   BACKOFF_CAP_MS: positiveInt().default(30_000),
   OUTBOX_MAX_ATTEMPTS: positiveInt().default(8),
+  OVERLOAD_MAX_WAIT_MS: positiveInt().default(900_000), // H5: how long one step may wait on 429s
   DEFAULT_MAX_STEPS: positiveInt().default(200),
   INLINE_RESULT_MAX_BYTES: positiveInt().default(65_536),
   LLM_TIMEOUT_MS: positiveInt().default(60_000),
