@@ -315,3 +315,11 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   worker's network) does NOT pause every worker. Chaos 3 still passes: 108 LLM calls vs
   119–123 before, 19 steps retried vs 26–30. Still to come in PHX-067: 429s don't use an
   attempt, bounded by `OVERLOAD_MAX_WAIT_MS`.
+- 429s are free (PHX-067, 22 Nov 2026), the rest of H5 (D-30). In `runWithRetries` a 429
+  doesn't use one of the 5 attempts. The backoff exponent still grows through a streak of
+  429s (a separate failure counter), so the provider isn't hammered every 0.5 s. The bound
+  is the clock since the step's first 429 (cool-down waits included): at
+  `OVERLOAD_MAX_WAIT_MS` (15 min) the step ends as PermanentError "provider overloaded for
+  N min". This supersedes D-24's Chaos 3 rule: with only 429s injected nothing can give up
+  any more, so the gate is now strict (every task DONE, no ERROR rows), and "retries
+  happened" means a step made more calls than its saved attempts.

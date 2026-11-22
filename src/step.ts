@@ -84,15 +84,18 @@ function retryAfterMs(value: string | null | undefined): number | undefined {
 }
 
 // ---- Retries inside a step (LLD §4.3) ----
-export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number };
+export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number; overloadMaxWaitMs?: number };
 /** H5: a provider whose limit is shared by every worker (LLD §4.3), and where its cool-down lives. */
 export type Cooldown = { provider: string; db?: Pick<pg.Pool, "query"> | undefined };
 const policyFromConfig = (): RetryPolicy =>
-  ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS });
+  ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS,
+     overloadMaxWaitMs: config.OVERLOAD_MAX_WAIT_MS });
 
 /**
  * Calls `attempt` until it succeeds. Only TransientError is retried (on the last attempt it becomes
  * PermanentError); anything else passes through. Returns the result and the attempt count.
+ * A 429 doesn't use an attempt (H5: the provider did no work), but 429s for longer than
+ * overloadMaxWaitMs since the first one end the step as PermanentError ("provider overloaded").
  */
 export async function runWithRetries<T>(
   attempt: () => Promise<T>,
@@ -100,7 +103,10 @@ export async function runWithRetries<T>(
   policy: RetryPolicy = policyFromConfig(),
   cooldown?: Cooldown,
 ): Promise<{ result: T; attempts: number }> {
-  for (let n = 1; ; n++) {
+  let n = 1; // attempts that count: a 429 doesn't
+  let failures = 0; // every failure, 429s too: the backoff keeps growing through a streak of 429s
+  let firstRateLimitAt: number | undefined;
+  for (;;) {
     // H5: wait out the provider's shared cool-down first. Waiting never counts as an attempt.
     if (cooldown) await sleep(await cooldownRemainingMs(cooldown.provider, cooldown.db), signal);
     try {
@@ -108,10 +114,21 @@ export async function runWithRetries<T>(
     } catch (err) {
       if (err instanceof PermanentError) err.attempts = n;
       if (!(err instanceof TransientError)) throw err;
-      if (n >= policy.maxAttempts) {
-        throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
+      failures++;
+      if (err.status === 429) {
+        firstRateLimitAt ??= Date.now();
+        const overloadMs = Date.now() - firstRateLimitAt;
+        if (overloadMs >= (policy.overloadMaxWaitMs ?? Infinity)) {
+          const min = (overloadMs / 60_000).toFixed(1);
+          throw Object.assign(new PermanentError(`provider overloaded for ${min} min: ${err.message}`, { cause: err }), { attempts: n });
+        }
+      } else {
+        if (n >= policy.maxAttempts) {
+          throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
+        }
+        n++;
       }
-      const waitMs = backoffMs(n, err.retryAfterMs, policy);
+      const waitMs = backoffMs(failures, err.retryAfterMs, policy);
       // The provider is overloaded (429 / 5xx): make EVERY worker wait, not just me. The next
       // pass waits it out at the top of the loop; GREATEST keeps it at least waitMs.
       const overloaded = err.status === 429 || (err.status ?? 0) >= 500;
