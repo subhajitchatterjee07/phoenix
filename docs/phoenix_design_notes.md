@@ -306,3 +306,12 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   It runs in CI. The task is about 61 s long (60 sources at 1 s), so when the frozen worker
   wakes, the new owner is still RUNNING; that makes the fencing token, not the status
   check, what rejects it.
+- Shared cool-down built (PHX-066, 22 Nov 2026), as decided in H5 (D-30). The opt-in is per
+  step, `step(..., { provider: "llm" })`, so built-in steps (`now`, `random`) never touch
+  the table. Before every attempt, `runWithRetries` waits out the provider's cool-down.
+  On a 429 or 5xx it pushes the cool-down forward (Retry-After, else backoff) instead of
+  sleeping alone; the next pass waits it out with everyone else. `TransientError` now
+  carries the HTTP status, so a timeout or connection error (which may be only this
+  worker's network) does NOT pause every worker. Chaos 3 still passes: 108 LLM calls vs
+  119–123 before, 19 steps retried vs 26–30. Still to come in PHX-067: 429s don't use an
+  attempt, bounded by `OVERLOAD_MAX_WAIT_MS`.

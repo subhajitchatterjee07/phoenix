@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { config } from "./config.js";
-import { loadEvent, saveEvent, type OutboxRow } from "./queries.js";
+import { cooldownRemainingMs, extendCooldown, loadEvent, saveEvent, type OutboxRow } from "./queries.js";
 
 /**
  * JSON text that is identical for equal values: object keys sorted at every level,
@@ -63,14 +63,14 @@ export class PermanentError extends Error {
 }
 export class TransientError extends Error {
   override name = "TransientError";
-  constructor(message: string, public readonly retryAfterMs?: number) {
+  constructor(message: string, public readonly retryAfterMs?: number, public readonly status?: number) {
     super(message);
   }
 }
 
 /** LLD §4.3 for any HTTP status: 429, 408 and 5xx are worth retrying; any other 4xx is not. */
 export function classifyHttp(status: number, message: string, retryAfter?: string | null): TransientError | PermanentError {
-  if (status === 429 || status === 408 || status >= 500) return new TransientError(message, retryAfterMs(retryAfter));
+  if (status === 429 || status === 408 || status >= 500) return new TransientError(message, retryAfterMs(retryAfter), status);
   return new PermanentError(message);
 }
 
@@ -85,6 +85,8 @@ function retryAfterMs(value: string | null | undefined): number | undefined {
 
 // ---- Retries inside a step (LLD §4.3) ----
 export type RetryPolicy = { maxAttempts: number; baseMs: number; capMs: number };
+/** H5: a provider whose limit is shared by every worker (LLD §4.3), and where its cool-down lives. */
+export type Cooldown = { provider: string; db?: Pick<pg.Pool, "query"> | undefined };
 const policyFromConfig = (): RetryPolicy =>
   ({ maxAttempts: config.STEP_MAX_ATTEMPTS, baseMs: config.BACKOFF_BASE_MS, capMs: config.BACKOFF_CAP_MS });
 
@@ -96,8 +98,11 @@ export async function runWithRetries<T>(
   attempt: () => Promise<T>,
   signal: AbortSignal,
   policy: RetryPolicy = policyFromConfig(),
+  cooldown?: Cooldown,
 ): Promise<{ result: T; attempts: number }> {
   for (let n = 1; ; n++) {
+    // H5: wait out the provider's shared cool-down first. Waiting never counts as an attempt.
+    if (cooldown) await sleep(await cooldownRemainingMs(cooldown.provider, cooldown.db), signal);
     try {
       return { result: await attempt(), attempts: n };
     } catch (err) {
@@ -106,7 +111,12 @@ export async function runWithRetries<T>(
       if (n >= policy.maxAttempts) {
         throw Object.assign(new PermanentError(`gave up after ${n} attempts: ${err.message}`, { cause: err }), { attempts: n });
       }
-      await sleep(backoffMs(n, err.retryAfterMs, policy), signal);
+      const waitMs = backoffMs(n, err.retryAfterMs, policy);
+      // The provider is overloaded (429 / 5xx): make EVERY worker wait, not just me. The next
+      // pass waits it out at the top of the loop; GREATEST keeps it at least waitMs.
+      const overloaded = err.status === 429 || (err.status ?? 0) >= 500;
+      if (cooldown && overloaded) await extendCooldown(cooldown.provider, waitMs, cooldown.db);
+      else await sleep(waitMs, signal);
     }
   }
 }
@@ -142,7 +152,10 @@ export type StepOutput<T> = { value: T; tokens?: number };
 /** What a step function is told: its id (e.g. for the X-Phoenix-Step header) and the abort signal. */
 export type StepMeta = { stepId: number; signal: AbortSignal };
 /** A side-effect step names the outbox row its value produces; saved in the events transaction (§5.5). */
-export type StepOptions<T> = { outbox?: (value: T) => OutboxRow };
+export type StepOptions<T> = {
+  outbox?: (value: T) => OutboxRow;
+  provider?: string; // H5: share this provider's cool-down with every worker (e.g. "llm")
+};
 
 export async function step<A, T>(
   ctx: StepContext,
@@ -182,7 +195,8 @@ export async function step<A, T>(
   let attempts: number;
   let tokens = 0;
   try {
-    const run = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal);
+    const cooldown = options.provider ? { provider: options.provider, db: ctx.db } : undefined;
+    const run = await runWithRetries(() => fn(args, { stepId, signal: ctx.signal }), ctx.signal, undefined, cooldown);
     // Return exactly what a replay will return (JSON), and reject values JSON would change.
     outcome = { ok: true, value: JSON.parse(canonicalJson(run.result.value)) as T };
     ({ attempts } = run);
