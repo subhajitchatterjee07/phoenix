@@ -28,7 +28,8 @@
     "chaos:freeze": "bash testing/chaos/freeze.sh",
     "chaos:p2": "bash testing/chaos/kill-loop.sh 20 200",
     "chaos:p3": "bash testing/chaos/p3-ratelimit.sh",
-    "chaos:p4": "bash testing/chaos/p4-outbox.sh"
+    "chaos:p4": "bash testing/chaos/p4-outbox.sh",
+    "chaos:p5": "bash testing/chaos/p5-leases.sh"
   },
   "repository": {
     "type": "git",
