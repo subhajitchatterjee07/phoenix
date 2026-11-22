@@ -291,3 +291,11 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   else (bugs, the database down at the finish, NonDeterminism after a bad deploy) is logged
   and left for a retry. A task that keeps hitting the same bug retries every ~30 s forever:
   the poison-task gap, tracked as B-40 until phase 9 (DLQ).
+- Freeze and block-loop (PHX-041, 22 Nov 2026). The LLD said `kill -STOP` / `kill -CONT`.
+  Measured: our containers run with `init: true`, so `docker kill --signal STOP` stops only
+  PID 1 (docker-init, state `T`) while node keeps running (`Sl`). A freeze built that way
+  freezes nothing, and Chaos 5 would pass vacuously. `freeze.sh` uses `docker pause` (the
+  cgroup freezer stops every process). The "block the event loop" step is a vitest test,
+  not a step in the product (your call). A step busy-waits synchronously while a separate
+  child process claims the task; the busy loop ends when the child's marker file appears
+  (no timing guesses), and the blocked step's save must be `Fenced` with nothing written.
