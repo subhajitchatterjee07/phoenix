@@ -73,6 +73,7 @@ jobs:
       - run: npm run chaos:p1
       - run: npm run chaos:p3
       - run: npm run chaos:p4
+      - run: npm run chaos:p5
       - name: Container logs (on failure)
         if: failure()
         run: docker compose logs --no-color --tail 100

@@ -299,3 +299,10 @@ them as not done (extra rule, extra write per step). Visibility comes from logs/
   not a step in the product (your call). A step busy-waits synchronously while a separate
   child process claims the task; the busy loop ends when the child's marker file appears
   (no timing guesses), and the blocked step's save must be `Fenced` with nothing written.
+- Chaos 5 (PHX-042, 22 Nov 2026), the phase 5 gate, with real leases (nothing
+  fast-forwarded). HLD P2 says takeover "within ~35 s", but by the design's own numbers
+  the worst case is lease 30 + poll 5 + jitter 1 = 36 s. The script asserts ≤ 38 s
+  (36 + 2 s for docker/psql), computed from those defaults, and prints the measured time.
+  It runs in CI. The task is about 61 s long (60 sources at 1 s), so when the frozen worker
+  wakes, the new owner is still RUNNING; that makes the fencing token, not the status
+  check, what rejects it.
