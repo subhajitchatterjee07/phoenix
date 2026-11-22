@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import { inputHash, PermanentError, type StepContext } from "../src/step.js";
+import { classifyHttp, inputHash, PermanentError, type StepContext } from "../src/step.js";
 import { createLlm } from "../src/tools/llm.js";
 import { runTask } from "../src/workflows.js";
 import { buildFakeLlm } from "../testing/fake-llm.js";
@@ -74,4 +74,11 @@ it("with input.email, step 5 writes the email and queues ONE outbox row; a re-ru
   const { rows } = await db.query("SELECT step_id, recipient, guarantee, payload, status FROM outbox WHERE task_id = $1", [t.taskId]);
   expect(rows).toEqual([{ step_id: 5, recipient: "boss@example.com", guarantee: "AT_LEAST_ONCE",
     payload: { subject: task.goal, body: body.result_inline }, status: "PENDING" }]);
+});
+
+it("every LLM step shares the provider cool-down: one 429 makes a provider_cooldown row", async () => {
+  let first = true;
+  const rateLimitedOnce: typeof llm = { chat: (m, c) => (first ? ((first = false), Promise.reject(classifyHttp(429, "slow down", "0.05"))) : llm.chat(m, c)) };
+  await runTask(ctx(), t, rateLimitedOnce);
+  expect((await db.query("SELECT provider FROM provider_cooldown")).rows).toEqual([{ provider: "llm" }]);
 });

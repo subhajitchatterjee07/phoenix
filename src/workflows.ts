@@ -7,6 +7,7 @@ type Llm = { chat(messages: ChatMessage[], call: LlmCall): Promise<LlmReply> };
 
 // Phase 1: "fetch" reads the texts from the task's input. Real web fetch is phase 7.
 // `email` stands in for a planned send_email step until the planner exists (D-27).
+const LLM = { provider: "llm" }; // every LLM step shares the provider's cool-down (H5)
 const Input = z.object({
   sources: z.array(z.string().min(1)).min(1),
   email: z.object({ to: z.email(), guarantee: z.enum(["AT_LEAST_ONCE", "AT_MOST_ONCE"]) }).optional(),
@@ -38,7 +39,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
         call(meta.stepId, meta.signal),
       );
       return { value: reply.content, tokens: reply.tokens };
-    });
+    }, LLM);
     // Saved in events either way, so a restart replays it for free. A source that failed for
     // good is reported as missing and the task goes on (LLD §4.3: record ERROR, continue).
     summaries.push(summary.ok ? summary.value : `not available (${summary.error})`);
@@ -56,7 +57,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
       call(meta.stepId, meta.signal),
     );
     return { value: reply.content, tokens: reply.tokens };
-  });
+  }, LLM);
   if (!email) return valueOf(report);
 
   // Step N+2: the LLM writes the email; the outbox row is saved with the event, and the
@@ -71,7 +72,7 @@ export async function runTask(ctx: StepContext, task: Task, llm: Llm = defaultLl
       call(meta.stepId, meta.signal),
     );
     return { value: reply.content, tokens: reply.tokens };
-  }, { outbox: (body) => ({ kind: "email", guarantee: args.guarantee, recipient: args.to, payload: { subject: task.goal, body } }) });
+  }, { ...LLM, outbox: (body) => ({ kind: "email", guarantee: args.guarantee, recipient: args.to, payload: { subject: task.goal, body } }) });
   valueOf(sent); // an email that could not be written is a deliverable that failed
   return valueOf(report);
 }
